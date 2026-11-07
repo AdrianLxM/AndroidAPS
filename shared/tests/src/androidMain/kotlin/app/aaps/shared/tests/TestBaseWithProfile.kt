@@ -7,10 +7,12 @@ import app.aaps.core.data.model.EPS
 import app.aaps.core.data.model.GlucoseUnit
 import app.aaps.core.data.model.ICfg
 import app.aaps.core.data.model.PS
+import app.aaps.core.data.model.RM
 import app.aaps.core.interfaces.aps.APSResult
 import app.aaps.core.interfaces.aps.GlucoseStatus
 import app.aaps.core.interfaces.configuration.Config
 import app.aaps.core.interfaces.constraints.ConstraintsChecker
+import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.db.ProcessedTbrEbData
 import app.aaps.core.interfaces.di.MetroMemberInjector
 import app.aaps.core.interfaces.insulin.ConcentrationHelper
@@ -53,12 +55,14 @@ import app.aaps.plugins.aps.openAPS.DeltaCalculator
 import app.aaps.plugins.aps.openAPSSMB.GlucoseStatusCalculatorSMB
 import app.aaps.shared.impl.utils.DateUtilImpl
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import org.json.JSONObject
 import org.junit.jupiter.api.BeforeEach
 import org.mockito.ArgumentMatchers.anyDouble
 import org.mockito.ArgumentMatchers.anyInt
+import org.mockito.ArgumentMatchers.anyLong
 import org.mockito.ArgumentMatchers.anyString
 import org.mockito.Mock
 import org.mockito.invocation.InvocationOnMock
@@ -98,6 +102,15 @@ open class TestBaseWithProfile : TestBase() {
     @Mock lateinit var typedArray: TypedArray
     @Mock lateinit var profileRepository: ProfileRepository
     @Mock lateinit var ch: ConcentrationHelper
+
+    /**
+     * The running mode store that [apsResultProvider] results read in `isChangeRequested`.
+     *
+     * Its own name, not `persistenceLayer`: many subclasses declare a `persistenceLayer` mock of their
+     * own, and a field with the same name here would clash with all of them. Answers CLOSED_LOOP by
+     * default; stub it again for an open loop test.
+     */
+    @Mock lateinit var runningModePersistenceLayer: PersistenceLayer
 
     lateinit var dateUtil: DateUtil
     lateinit var profileUtil: ProfileUtil
@@ -177,7 +190,13 @@ open class TestBaseWithProfile : TestBase() {
         whenever(profileRepository.revision).thenReturn(MutableStateFlow(0L))
         whenever(profileRepository.profile).thenReturn(MutableStateFlow(getValidProfileStore()))
         deltaCalculator = DeltaCalculator(aapsLogger)
-        apsResultProvider = { DetermineBasalResult(aapsLogger, fabricPrivacy, constraintsChecker, preferences, activePlugin, processedTbrEbData, profileFunction, rh, decimalFormatter, dateUtil, { apsResultProvider() }, ch) }
+        runBlocking { whenever(runningModePersistenceLayer.getRunningModeActiveAt(anyLong())).thenReturn(RM(timestamp = 0, mode = RM.Mode.CLOSED_LOOP, duration = 0)) }
+        apsResultProvider = {
+            DetermineBasalResult(
+                aapsLogger, fabricPrivacy, constraintsChecker, preferences, activePlugin, processedTbrEbData, profileFunction, rh, decimalFormatter, dateUtil,
+                { apsResultProvider() }, ch, runningModePersistenceLayer
+            )
+        }
         validProfile = ProfileSealed.Pure(pureProfileFromJson(validProfileJSON, dateUtil)!!, activePlugin)
         effectiveProfileSwitch = EPS(
             timestamp = dateUtil.now(),

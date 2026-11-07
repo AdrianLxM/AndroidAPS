@@ -89,9 +89,18 @@ class SafetyPlugin(
         return value
     }
 
+    /**
+     * SMB needs a closed loop that is both permitted and switched on.
+     *
+     * [isClosedLoopAllowed] only says if closed loop is permitted (objectives, dev build, extended
+     * bolus). It does not look at the running mode. Without the running mode check, a user in
+     * OPEN_LOOP gets SMB results, and the open loop "Accept" gives only the low temp that comes with
+     * the SMB and drops the SMB itself. CLOSED_LOOP_LGS keeps SMB, as before the running mode refactor.
+     */
     override suspend fun isSMBModeEnabled(value: Constraint<Boolean>): Constraint<Boolean> {
         val closedLoop = constraintChecker.isClosedLoopAllowed()
-        if (!closedLoop.value()) value.set(false, rh.gs(ConstraintsStrings.smbnotallowedinopenloopmode), this)
+        if (!closedLoop.value() || !persistenceLayer.getRunningModeActiveAt(dateUtil.now()).mode.isClosedLoopOrLgs())
+            value.set(false, rh.gs(ConstraintsStrings.smbnotallowedinopenloopmode), this)
         return value
     }
 

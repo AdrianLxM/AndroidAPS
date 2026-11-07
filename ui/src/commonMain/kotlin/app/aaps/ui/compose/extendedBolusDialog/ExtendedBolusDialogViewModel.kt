@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.aaps.core.data.ue.Sources
 import app.aaps.core.data.ui.ConfirmationLine
+import app.aaps.core.interfaces.aps.Loop
 import app.aaps.core.interfaces.bolus.BatchAction
 import app.aaps.core.interfaces.bolus.BatchExecutor
 import app.aaps.core.interfaces.clientcontrol.ActionProgress
@@ -41,6 +42,7 @@ import kotlinx.coroutines.launch
 @Inject
 class ExtendedBolusDialogViewModel(
     private val constraintChecker: ConstraintsChecker,
+    private val loop: Loop,
     activePlugin: ActivePlugin,
     private val config: Config,
     private val rh: TextResolver,
@@ -90,7 +92,8 @@ class ExtendedBolusDialogViewModel(
             )
         }
         viewModelScope.launch {
-            val isClosedLoop = constraintChecker.isClosedLoopAllowed().value()
+            // Permitted is not enough: the warning is for a user whose closed loop (or LGS) is switched on.
+            val isClosedLoop = constraintChecker.isClosedLoopAllowed().value() && loop.runningMode().isClosedLoopOrLgs()
             _uiState.update {
                 it.copy(
                     showLoopStopWarning = isClosedLoop,

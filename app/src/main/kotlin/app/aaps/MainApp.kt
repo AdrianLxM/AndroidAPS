@@ -555,7 +555,9 @@ class MainApp : Application(), MetroMemberInjector, MetroViewModelFactoryOwner, 
 
     private suspend fun setUserStats() {
         if (!fabricPrivacy.fabricEnabled()) return
-        val closedLoopEnabled = if (constraintChecker.isClosedLoopAllowed().value()) "CLOSED_LOOP_ENABLED" else "CLOSED_LOOP_DISABLED"
+        // Permitted and switched on. isClosedLoopAllowed() alone is also true in OPEN_LOOP.
+        val closedLoopActive = constraintChecker.isClosedLoopAllowed().value() && loop.runningMode().isClosedLoopOrLgs()
+        val closedLoopEnabled = if (closedLoopActive) "CLOSED_LOOP_ENABLED" else "CLOSED_LOOP_DISABLED"
         fabricPrivacy.setUserProperty("Mode", config.APPLICATION_ID + "-" + closedLoopEnabled)
         fabricPrivacy.setUserProperty("Language", preferences.getIfExists(StringKey.GeneralLanguage) ?: Locale.getDefault().language)
         fabricPrivacy.setUserProperty("Version", config.VERSION_NAME)

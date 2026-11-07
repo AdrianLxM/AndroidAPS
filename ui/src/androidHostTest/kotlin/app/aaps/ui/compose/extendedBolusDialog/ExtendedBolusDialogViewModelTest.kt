@@ -1,6 +1,7 @@
 package app.aaps.ui.compose.extendedBolusDialog
 
 import app.aaps.core.data.pump.defs.PumpDescription
+import app.aaps.core.interfaces.aps.Loop
 import app.aaps.core.interfaces.bolus.BatchExecutor
 import app.aaps.core.interfaces.configuration.Config
 import app.aaps.core.interfaces.constraints.Constraint
@@ -29,6 +30,7 @@ import org.mockito.kotlin.whenever
 internal class ExtendedBolusDialogViewModelTest {
 
     @Mock private lateinit var constraintChecker: ConstraintsChecker
+    @Mock private lateinit var loop: Loop
     @Mock private lateinit var activePlugin: ActivePlugin
     @Mock private lateinit var config: Config
     @Mock private lateinit var rh: ResourceHelper
@@ -50,7 +52,7 @@ internal class ExtendedBolusDialogViewModelTest {
         whenever(maxConstraint.value()).thenReturn(10.0)
         whenever(constraintChecker.getMaxExtendedBolusAllowed()).thenReturn(maxConstraint)
         sut = ExtendedBolusDialogViewModel(
-            constraintChecker, activePlugin, config, rh, batchExecutor, rxBus,
+            constraintChecker, loop, activePlugin, config, rh, batchExecutor, rxBus,
             CoroutineScope(UnconfinedTestDispatcher())
         )
     }
