@@ -561,7 +561,11 @@ class LoopPlugin(
             }
             val pump = activePlugin.activePump
             var apsResult: APSResult? = null
-            if (!isEnabled()) return@withContext
+            if (!isEnabled()) {
+                aapsLogger.debug(LTag.APS, rh.gs(CoreUiStrings.loopisdisabled))
+                rxBus.send(EventLoopSetLastRunGui(rh.gs(CoreUiStrings.loopisdisabled)))
+                return@withContext
+            }
             val profile = profileFunction.getProfile()
             if (profile == null || !profileFunction.isProfileValid("Loop")) {
                 aapsLogger.debug(LTag.APS, rh.gs(CoreUiStrings.no_profile_set))
@@ -575,9 +579,20 @@ class LoopPlugin(
                 return@withContext
             }
 
-            // Check if pump info is loaded
-            if (ch.fromPump(pump.baseBasalRate) < 0.01) return@withContext
-            val usedAPS = activePlugin.activeAPS ?: return@withContext
+            // Check if pump info is loaded. A pump driver that has not read the basal rate yet (for
+            // example just after a restart) reports 0 here.
+            val baseBasalRate = ch.fromPump(pump.baseBasalRate)
+            if (baseBasalRate < 0.01) {
+                aapsLogger.debug(LTag.APS, "${rh.gs(ApsStrings.pump_not_initialized)} Base basal rate: $baseBasalRate")
+                rxBus.send(EventLoopSetLastRunGui(rh.gs(ApsStrings.pump_not_initialized)))
+                return@withContext
+            }
+            val usedAPS = activePlugin.activeAPS
+            if (usedAPS == null) {
+                aapsLogger.debug(LTag.APS, rh.gs(ApsStrings.no_aps_selected))
+                rxBus.send(EventLoopSetLastRunGui(rh.gs(ApsStrings.no_aps_selected)))
+                return@withContext
+            }
             if (usedAPS.isEnabled()) {
                 usedAPS.invoke(initiator, tempBasalFallback)
                 apsResult = usedAPS.lastAPSResult
@@ -585,6 +600,7 @@ class LoopPlugin(
 
             // Check if we have any result
             if (apsResult == null) {
+                aapsLogger.debug(LTag.APS, rh.gs(ApsStrings.no_aps_selected))
                 rxBus.send(EventLoopSetLastRunGui(rh.gs(ApsStrings.no_aps_selected)))
                 return@withContext
             }

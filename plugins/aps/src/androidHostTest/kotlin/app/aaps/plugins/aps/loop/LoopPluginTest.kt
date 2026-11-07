@@ -26,11 +26,13 @@ import app.aaps.core.interfaces.pump.PumpWithConcentration
 import app.aaps.core.interfaces.queue.CommandQueue
 import app.aaps.core.interfaces.queue.SmbPause
 import app.aaps.core.interfaces.receivers.ReceiverStatusStore
+import app.aaps.core.interfaces.rx.bus.RxBus
 import app.aaps.core.interfaces.utils.HardLimits
 import app.aaps.core.keys.IntKey
 import app.aaps.core.keys.interfaces.TextRef
 import app.aaps.core.objects.constraints.ConstraintObject
 import app.aaps.core.utils.MidnightUtils
+import app.aaps.plugins.aps.loop.events.EventLoopSetLastRunGui
 import app.aaps.plugins.aps.loop.runningMode.RunningModeReconciler
 import app.aaps.shared.tests.TestBaseWithProfile
 import com.google.common.truth.Truth.assertThat
@@ -94,10 +96,10 @@ class LoopPluginTest : TestBaseWithProfile() {
      * A second copy of this argument list broke the build once already: `uiInteraction` was dropped from the
      * constructor, the copy in `prepare` was updated and the one in a test body was not. A test that needs
      * its own instance - one built with a different `config` stubbing, say - calls this instead of pasting
-     * the list again.
+     * the list again. [bus] lets a test pass a mocked bus to check which GUI events were sent.
      */
-    private fun buildLoopPlugin() = LoopPlugin(
-        aapsLogger, rxBus, preferences, config,
+    private fun buildLoopPlugin(bus: RxBus = rxBus) = LoopPlugin(
+        aapsLogger, bus, preferences, config,
         constraintChecker, baseText, profileFunction, commandQueue, activePlugin, processedTbrEbData, receiverStatusStore, fabricPrivacy, dateUtil, uel,
         // The shared test base still hands out a javax Provider, which other tests rely on;
         // LoopPlugin takes Metro's now, so it is adapted here rather than flipping the base.
@@ -1131,4 +1133,69 @@ class LoopPluginTest : TestBaseWithProfile() {
         assertThat(loopPlugin.smbFallbackJob).isNotSameInstanceAs(first)
         assertThat(loopPlugin.smbFallbackJob!!.isActive).isTrue()
     }
+
+// region invoke early returns
+
+    /**
+     * Sets up everything so that [LoopPlugin.invoke] gets past the running mode, profile and queue
+     * checks: a closed loop that is consistent with the constraints, a valid profile and an empty queue.
+     * Each test then breaks one later thing. The bus is a mock, so the test can check which GUI text
+     * the loop screen gets.
+     */
+    private suspend fun prepareInvoke(bus: RxBus) {
+        setupForPreCheck()
+        mockCurrentMode(RM(mode = RM.Mode.CLOSED_LOOP, timestamp = dateUtil.now(), duration = 0))
+        whenever(profileFunction.getProfile()).thenReturn(mock<EffectiveProfile>())
+        whenever(profileFunction.isProfileValid(any())).thenReturn(true)
+        whenever(commandQueue.size()).thenReturn(0)
+        whenever(commandQueue.performing()).thenReturn(null)
+        loopPlugin = buildLoopPlugin(bus)
+    }
+
+    /**
+     * A pump driver that has not read the basal rate yet (for example just after a restart) reports 0.
+     * The loop stops, and the loop screen must say why instead of keeping the old result and time.
+     */
+    @Test
+    fun `invoke tells the loop screen when the pump basal rate is not loaded`() = runTest {
+        val bus = mock<RxBus>()
+        prepareInvoke(bus)
+        whenever(virtualPumpPlugin.baseBasalRate).thenReturn(PumpRate(0.0))
+        whenever(ch.fromPump(any<PumpRate>())).thenReturn(0.0)
+
+        loopPlugin.invoke("test", allowNotification = false)
+
+        verify(bus).send(EventLoopSetLastRunGui("Pump not initialized!"))
+        verify(activePlugin, never()).activeAPS
+    }
+
+    @Test
+    fun `invoke tells the loop screen when no APS is selected`() = runTest {
+        val bus = mock<RxBus>()
+        prepareInvoke(bus)
+        whenever(virtualPumpPlugin.baseBasalRate).thenReturn(PumpRate(1.0))
+        whenever(ch.fromPump(any<PumpRate>())).thenReturn(1.0)
+        whenever(activePlugin.activeAPS).thenReturn(null)
+
+        loopPlugin.invoke("test", allowNotification = false)
+
+        verify(bus).send(EventLoopSetLastRunGui("NO APS SELECTED OR PROVIDED RESULT"))
+        verify(persistenceLayer, never()).insertOrUpdateApsResult(any())
+    }
+
+    /** A client build forces the loop plugin off. The loop screen must say so, not show an old result. */
+    @Test
+    fun `invoke tells the loop screen when the loop plugin is disabled`() = runTest {
+        val bus = mock<RxBus>()
+        prepareInvoke(bus)
+        whenever(config.APS).thenReturn(false)
+        loopPlugin = buildLoopPlugin(bus)
+
+        loopPlugin.invoke("test", allowNotification = false)
+
+        verify(bus).send(EventLoopSetLastRunGui("Loop is disabled"))
+        verify(profileFunction, never()).getProfile()
+    }
+
+// endregion
 }
