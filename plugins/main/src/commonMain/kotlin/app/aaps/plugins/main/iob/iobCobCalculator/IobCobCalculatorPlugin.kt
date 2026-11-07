@@ -47,6 +47,7 @@ import app.aaps.core.interfaces.rx.events.EventConfigBuilderChange
 import app.aaps.core.interfaces.rx.events.EventTimeZoneChanged
 import app.aaps.core.interfaces.utils.DateUtil
 import app.aaps.core.interfaces.utils.DecimalFormatter
+import app.aaps.core.interfaces.utils.HardLimits
 import app.aaps.core.interfaces.utils.MidnightTime
 import app.aaps.core.interfaces.workflow.CalculationSignalsEmitter
 import app.aaps.core.interfaces.workflow.CalculationWorkflow
@@ -554,8 +555,9 @@ class IobCobCalculatorPlugin(
     /**
      *  Time range to the past for IOB calculation
      *  @return milliseconds
+     *  @see iobLookBack
      */
-    private suspend fun range(): Long = ((profileFunction.getProfile()?.iCfg?.dia ?: Constants.DEFAULT_DIA) * 60 * 60 * 1000).toLong()
+    private suspend fun range(): Long = iobLookBack(profileFunction.getProfile()?.iCfg?.insulinEndTime)
 
     override suspend fun calculateIobFromBolus(): IobTotal = calculateIobFromBolusToTime(dateUtil.now())
 
@@ -610,7 +612,8 @@ class IobCobCalculatorPlugin(
                     e.amount *= newDuration.toDouble() / e.duration
                     e.duration = newDuration
                 }
-                val profile = profileFunction.getProfile(e.timestamp) ?: return total
+                // Skip only this one, like the temp basal loops do. `return` dropped all later extended boluses too.
+                val profile = profileFunction.getProfile(e.timestamp) ?: continue
                 val calc = e.iobCalc(toTime, profile)
                 total.plus(calc)
             }
@@ -729,5 +732,20 @@ class IobCobCalculatorPlugin(
 
         /** How long cached IOB values are kept: more than the 24 h + DIA the calculation looks back. */
         const val CACHED_IOB_HOURS = 48L
+
+        /** The longest DIA the hard limits allow, for any age group, in milliseconds. */
+        val MAX_INSULIN_END_TIME: Long = (HardLimits.LIMIT_DIA.values.maxOf { it.endInclusive } * 60 * 60 * 1000).toLong()
+
+        /**
+         * How far back the IOB calculation reads boluses, temp basals and extended boluses, in milliseconds.
+         *
+         * Each of them keeps the insulin (and so the DIA) it was given with. After a switch to an insulin
+         * with a shorter DIA, older insulin with a longer DIA is still acting. If the window used only the
+         * current DIA, that insulin would drop out too early and IOB would be too low. So the window is the
+         * longest DIA the hard limits allow, or the current DIA if that is longer.
+         *
+         * @param currentInsulinEndTime DIA of the current profile in milliseconds, or null if there is no profile
+         */
+        fun iobLookBack(currentInsulinEndTime: Long?): Long = max(currentInsulinEndTime ?: 0L, MAX_INSULIN_END_TIME)
     }
 }
