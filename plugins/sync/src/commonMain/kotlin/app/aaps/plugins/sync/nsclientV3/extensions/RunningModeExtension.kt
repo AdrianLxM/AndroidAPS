@@ -46,13 +46,13 @@ fun RM.toNSOfflineEvent(): NSOfflineEvent =
             )
 
         // DISABLED_LOOP can be open-ended either as "user permanent" (duration == 0) or as
-        // "auto-forced by constraint" (duration == Long.MAX_VALUE — see LoopPlugin.runningModePreCheck).
+        // "auto-forced by constraint" (duration == RM.ENDLESS_DURATION — see LoopPlugin.runningModePreCheck).
         // NS only renders an offline window when treatment.duration > 0, so substitute a long-but-finite
         // wire duration. originalDuration is normalized to 0 for both open-ended cases — Long.MAX_VALUE
         // does not round-trip through JSON cleanly (exceeds JS Number precision at 2^53), so giving the
         // AAPSCLIENT a clean 0 is both safer and sufficient (autoForced is carried separately).
         RM.Mode.DISABLED_LOOP     -> {
-            val isOpenEnded = duration == 0L || duration == Long.MAX_VALUE
+            val isOpenEnded = isEndless
             NSOfflineEvent(
                 eventType = EventType.APS_OFFLINE,
                 isValid = isValid,

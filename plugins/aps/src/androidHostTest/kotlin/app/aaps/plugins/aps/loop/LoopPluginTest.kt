@@ -306,6 +306,33 @@ class LoopPluginTest : TestBaseWithProfile() {
     }
 
     @Test
+    fun `minutesToEndOfSuspend returns Int_MAX_VALUE for a pump suspend`() = runTest {
+        // runningModePreCheck stores SUSPENDED_BY_PUMP with Int.MAX_VALUE minutes. That is an "endless"
+        // duration, not a real end about 4000 years ahead (which gave about 2.1e9 minutes before).
+        val startTime = 1672531200000L
+        val now = startTime + T.mins(10).msecs()
+        val runningMode = RM(mode = RM.Mode.SUSPENDED_BY_PUMP, timestamp = startTime, duration = RM.PUMP_SUSPEND_DURATION, autoForced = true)
+
+        whenever(dateUtil.now()).thenReturn(now)
+        whenever(persistenceLayer.getRunningModeActiveAt(now)).thenReturn(runningMode)
+
+        assertThat(loopPlugin.minutesToEndOfSuspend()).isEqualTo(Int.MAX_VALUE)
+    }
+
+    @Test
+    fun `minutesToEndOfSuspend returns Int_MAX_VALUE for a Long MAX_VALUE suspension without overflow`() = runTest {
+        // timestamp + Long.MAX_VALUE overflows to a negative number in Kotlin
+        val startTime = 1672531200000L
+        val now = startTime + T.mins(10).msecs()
+        val runningMode = RM(mode = RM.Mode.SUSPENDED_BY_USER, timestamp = startTime, duration = RM.ENDLESS_DURATION)
+
+        whenever(dateUtil.now()).thenReturn(now)
+        whenever(persistenceLayer.getRunningModeActiveAt(now)).thenReturn(runningMode)
+
+        assertThat(loopPlugin.minutesToEndOfSuspend()).isEqualTo(Int.MAX_VALUE)
+    }
+
+    @Test
     fun `minutesToEndOfSuspend returns 0 when temporary suspension has just ended`() = runTest {
         // Arrange
         val startTime = 1672531200000L
@@ -578,6 +605,10 @@ class LoopPluginTest : TestBaseWithProfile() {
         // Verify that the plugin tried to insert a new, auto-forced SUSPENDED_BY_PUMP mode
         assertThat(modeCaptor.firstValue.mode).isEqualTo(RM.Mode.SUSPENDED_BY_PUMP)
         assertThat(modeCaptor.firstValue.autoForced).isTrue()
+        // Stored with the pump suspend "endless" duration, so nothing treats it as a real end
+        assertThat(modeCaptor.firstValue.duration).isEqualTo(RM.PUMP_SUSPEND_DURATION)
+        assertThat(modeCaptor.firstValue.isEndless).isTrue()
+        assertThat(modeCaptor.firstValue.end).isEqualTo(Long.MAX_VALUE)
     }
 
     @Test

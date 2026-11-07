@@ -1015,10 +1015,9 @@ class OverviewDataCacheImpl(
             add(fromTime)
             for (rm in rmRecords) {
                 if (rm.timestamp in fromTime..endTime) add(rm.timestamp)
-                if (rm.isTemporary()) {
-                    val expiry = rm.timestamp + rm.duration
-                    if (expiry in fromTime..endTime) add(expiry)
-                }
+                // Long.MAX_VALUE for a mode without a planned end, so it is never in the window
+                val expiry = rm.end
+                if (expiry in fromTime..endTime) add(expiry)
             }
         }.distinct().sorted()
 
