@@ -837,15 +837,22 @@ class MainViewModel(
         }
     }
 
-    fun performLoopAccept() {
+    /**
+     * Accept the open loop suggestion shown in the loop sheet.
+     *
+     * The loop is not run again first: a new run would make a new suggestion that the user has not
+     * seen. [suggestionTime] names the shown one, and the loop refuses when it was replaced.
+     */
+    fun performLoopAccept(suggestionTime: Long) {
         protectionCheck.requestProtection(ProtectionCheck.Protection.BOLUS) { result ->
             if (result == ProtectionResult.GRANTED) {
                 viewModelScope.launch {
                     val lastRun = loop.lastRun ?: return@launch
                     if (lastRun.constraintsProcessed?.isChangeRequested() == true) {
                         uel.log(Action.ACCEPTS_TEMP_BASAL, Sources.Overview)
-                        loop.invoke("Accept temp button", false)
-                        loop.acceptChangeRequest()
+                        loop.acceptChangeRequest(suggestionTime)?.let { refused ->
+                            rxBus.send(EventShowDialog.Ok(title = rh.gs(CoreUiStrings.loop), message = refused))
+                        }
                     }
                 }
             }

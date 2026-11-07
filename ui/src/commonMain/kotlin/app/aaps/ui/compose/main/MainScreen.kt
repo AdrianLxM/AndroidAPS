@@ -542,7 +542,7 @@ fun MainScreen(
         val loopState by loopActionViewModel.uiState.collectAsStateWithLifecycle()
         app.aaps.ui.compose.loopSheet.LoopActionBottomSheet(
             state = loopState,
-            onPerform = { mainViewModel.performLoopAccept() },
+            onPerform = { mainViewModel.performLoopAccept(loopState.suggestionTime) },
             onDismiss = { showLoopActionSheet = false }
         )
     }

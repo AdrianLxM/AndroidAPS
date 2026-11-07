@@ -192,11 +192,13 @@ class LoopPlugin(
 
     // Serializes loop runs. Master's invoke() was @Synchronized; the suspend migration dropped that
     // (and @Synchronized cannot span suspension points). invoke() is reachable concurrently — the
-    // per-BG PostCalculationRunner, the Accept-temp button, loop pull-to-refresh, the temp-target
-    // change flow, and the deferred SMB fallback — so without this lock two runs can overlap and
-    // double-apply or mis-order TBR/SMB commands. Not reentrant: the SMB fallback re-invoke is
-    // deferred (postDelayed + appScope.launch) and runs after the current run releases the lock.
-    private val invokeMutex = Mutex()
+    // per-BG PostCalculationRunner, loop pull-to-refresh, the temp-target change flow, and the
+    // deferred SMB fallback — so without this lock two runs can overlap and double-apply or mis-order
+    // TBR/SMB commands. acceptChangeRequest takes it too, so a loop run cannot replace the suggestion
+    // while it is being enacted. Not reentrant: the SMB fallback re-invoke is deferred
+    // (postDelayed + appScope.launch) and runs after the current run releases the lock.
+    // internal, not private, so the test can hold it and check that acceptChangeRequest refuses.
+    internal val invokeMutex = Mutex()
 
     // Serializes running-mode reconciliation. runningModePreCheck() is a read-check-write across two
     // separate IO calls, and its triggers (the pump-status collector and invoke()) can arrive together, so
@@ -794,18 +796,19 @@ class LoopPlugin(
                     EventData.OpenLoopRequest(
                         rh.gs(ApsStrings.open_loop_new_suggestion),
                         contentText,
-                        EventData.OpenLoopRequestConfirmed(dateUtil.now())
+                        // The watch sends this back unchanged on Accept. It names the suggestion that
+                        // was shown, so acceptChangeRequest can refuse when a newer one replaced it.
+                        EventData.OpenLoopRequestConfirmed(it.lastAPSRun)
                     )
                 )
             )
         }
     }
 
-    override suspend fun acceptChangeRequest(): String? {
+    override suspend fun acceptChangeRequest(suggestionTime: Long): String? {
         val profile = profileFunction.getProfile() ?: return null
-        // Same hold as in `invoke`, and this path needs its own check: it enacts OUTSIDE `invokeMutex`
-        // and is reachable from the phone and the watch, so nothing `invoke` does protects it. The user
-        // pressed a button, so say why nothing happened rather than failing silently.
+        // Same hold as in `invoke`, and this path needs its own check: it does not go through `invoke`
+        // and is reachable from the phone and the watch, so nothing `invoke` does protects it.
         if (commandQueue.isHeld()) {
             aapsLogger.debug(LTag.APS, "acceptChangeRequest: queue is held (settings being applied), not enacting")
             return null
@@ -819,31 +822,62 @@ class LoopPlugin(
             dismissSuggestion()
             return rh.gs(InterfacesStrings.loopsuspended)
         }
-        val lastRun = lastRun ?: return null
-        val constraintsProcessed = lastRun.constraintsProcessed ?: return null
-        // A suggestion is only as good as the BG it was calculated from. Older than an old BG, it is
-        // not enacted - the next loop run makes a new one.
-        if (lastRun.lastAPSRun < dateUtil.now() - T.mins(Constants.OLD_BG_MINUTES).msecs()) {
-            aapsLogger.debug(LTag.APS, "acceptChangeRequest: suggestion from ${dateUtil.dateAndTimeAndSecondsString(lastRun.lastAPSRun)} is too old, not enacting")
+        // Only an open loop asks the user. In any other mode the loop enacts (or not) by itself, so an
+        // accept is a left-over: a watch keeps the notification after the user switched to closed loop.
+        // Enacting it would apply a closed loop result a second time, outside the loop run.
+        if (mode != RM.Mode.OPEN_LOOP) {
+            aapsLogger.debug(LTag.APS, "acceptChangeRequest: running mode $mode is not open loop, not enacting")
             dismissSuggestion()
-            return rh.gs(ApsStrings.open_loop_suggestion_too_old)
+            return rh.gs(ApsStrings.open_loop_not_active)
         }
-        // Protected for the same reason as the enactment in `invoke`, and it matters more
-        // here: the callers run this on a screen scope, so leaving the screen during the
-        // pump conversation used to abort a dose the user had just pressed a button for.
-        // Nothing is decided in this block, the request was calculated earlier, so there is
-        // no calculation to keep out of the invalidation barrier.
-        withContext(NonCancellable) {
-            val result = applyTBRRequest(constraintsProcessed, profile)
-            if (result.enacted) {
-                lastRun.tbrSetByPump = result
-                lastRun.lastTBRRequest = lastRun.lastAPSRun
-                lastRun.lastTBREnact = dateUtil.now()
-                lastRun.lastOpenModeAccept = dateUtil.now()
-                scheduleBuildAndStoreDeviceStatus("acceptChangeRequest")
-                preferences.inc(IntNonKey.ObjectivesManualEnacts)
+        // `invoke` writes the new result into the same LastRun object, field by field. Holding the lock
+        // means no loop run can change the suggestion between the check below and the pump command.
+        // tryLock, not lock: a loop run that is calculating now will replace the suggestion anyway, so
+        // waiting for it would only end in "there is a new suggestion".
+        if (!invokeMutex.tryLock()) {
+            aapsLogger.debug(LTag.APS, "acceptChangeRequest: a loop run is in progress, not enacting")
+            return rh.gs(ApsStrings.open_loop_busy)
+        }
+        try {
+            val lastRun = lastRun ?: return null
+            val constraintsProcessed = lastRun.constraintsProcessed ?: return null
+            // The user accepted the suggestion they saw. If a loop run replaced it since then, the
+            // current one was never shown, so it must not be enacted in its place. The new suggestion
+            // is already offered on the phone and the watch, so nothing is dismissed here.
+            if (lastRun.lastAPSRun != suggestionTime) {
+                aapsLogger.debug(
+                    LTag.APS,
+                    "acceptChangeRequest: accepted suggestion from ${dateUtil.dateAndTimeAndSecondsString(suggestionTime)} " +
+                        "was replaced by ${dateUtil.dateAndTimeAndSecondsString(lastRun.lastAPSRun)}, not enacting"
+                )
+                return rh.gs(ApsStrings.open_loop_suggestion_changed)
             }
-            rxBus.send(EventAcceptOpenLoopChange())
+            // A suggestion is only as good as the BG it was calculated from. Older than an old BG, it is
+            // not enacted - the next loop run makes a new one.
+            if (lastRun.lastAPSRun < dateUtil.now() - T.mins(Constants.OLD_BG_MINUTES).msecs()) {
+                aapsLogger.debug(LTag.APS, "acceptChangeRequest: suggestion from ${dateUtil.dateAndTimeAndSecondsString(lastRun.lastAPSRun)} is too old, not enacting")
+                dismissSuggestion()
+                return rh.gs(ApsStrings.open_loop_suggestion_too_old)
+            }
+            // Protected for the same reason as the enactment in `invoke`, and it matters more
+            // here: the callers run this on a screen scope, so leaving the screen during the
+            // pump conversation used to abort a dose the user had just pressed a button for.
+            // Nothing is decided in this block, the request was calculated earlier, so there is
+            // no calculation to keep out of the invalidation barrier.
+            withContext(NonCancellable) {
+                val result = applyTBRRequest(constraintsProcessed, profile)
+                if (result.enacted) {
+                    lastRun.tbrSetByPump = result
+                    lastRun.lastTBRRequest = lastRun.lastAPSRun
+                    lastRun.lastTBREnact = dateUtil.now()
+                    lastRun.lastOpenModeAccept = dateUtil.now()
+                    scheduleBuildAndStoreDeviceStatus("acceptChangeRequest")
+                    preferences.inc(IntNonKey.ObjectivesManualEnacts)
+                }
+                rxBus.send(EventAcceptOpenLoopChange())
+            }
+        } finally {
+            invokeMutex.unlock()
         }
         fabricPrivacy.logCustom("AcceptTemp")
         return null

@@ -91,14 +91,17 @@ interface Loop {
     suspend fun invoke(initiator: String, allowNotification: Boolean, tempBasalFallback: Boolean = false)
 
     /**
-     * Open loop mode trigger: enact the last calculated suggestion.
+     * Open loop mode trigger: enact the suggestion the user has seen and accepted.
      *
-     * Refused while the running mode pauses the loop, and when the suggestion is older than an old BG.
+     * Refused when the running mode is not open loop (a paused loop included), while a loop run is in
+     * progress, when [suggestionTime] is not the [LastRun.lastAPSRun] of the current suggestion (a
+     * newer one replaced the one the user saw), and when the suggestion is older than an old BG.
      * A suggestion can wait on the watch long after it was sent.
      *
+     * @param suggestionTime [LastRun.lastAPSRun] of the suggestion that was shown to the user
      * @return why it was refused, as text for the user, or null when it was not refused
      */
-    suspend fun acceptChangeRequest(): String?
+    suspend fun acceptChangeRequest(suggestionTime: Long): String?
 
     /**
      * Returns minutes to end of suspended loop
