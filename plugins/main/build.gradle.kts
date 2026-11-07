@@ -33,6 +33,13 @@ kotlin {
             }
         }
 
+        // Tests of commonMain code without Mockito. They run with jvmTest (and on iOS), not only on Android.
+        getByName("commonTest") {
+            dependencies {
+                implementation(kotlin("test"))
+            }
+        }
+
         // Hand written rather than taken from test-module-dependencies, which applies
         // com.android.library and so cannot be used here. Same approach as :plugins:sensitivity.
         getByName("androidHostTest") {
