@@ -752,7 +752,10 @@ class LoopPlugin(
                         lastRun.smbSetByPump = null
                     }
                 } else {
-                    // LGS
+                    // OPEN_LOOP. LGS is handled in the branch above, together with CLOSED_LOOP.
+                    // DISABLED_LOOP and the modes that pause the loop have already returned.
+                    // Nothing is enacted here: the change is only offered to the user.
+                    // Note: the carbs required alert above is not raised in this branch.
                     if (resultAfterConstraints.isChangeRequested() && allowNotification) {
                         presentSuggestion(resultAfterConstraints.resultAsString())
                     } else if (allowNotification) {
