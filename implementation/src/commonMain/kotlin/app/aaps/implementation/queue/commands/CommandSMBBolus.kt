@@ -17,6 +17,7 @@ import app.aaps.core.keys.IntKey
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.keys.interfaces.TextRef
 import app.aaps.core.ui.CoreUiStrings
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Clock
 
 class CommandSMBBolus(
@@ -38,7 +39,12 @@ class CommandSMBBolus(
         val r: PumpEnactResult
         val lastBolusTime = persistenceLayer.getNewestBolus()?.timestamp ?: 0L
         aapsLogger.debug(LTag.PUMPQUEUE, "Last bolus: $lastBolusTime ${dateUtil.dateAndTimeAndSecondsString(lastBolusTime)}")
-        if (SmbIntervalGate.tooSoon(lastBolusTime, preferences.get(IntKey.ApsMaxSmbFrequency), dateUtil.now())) {
+        if (loopPausedNow()) {
+            // The queue checks the running mode only when the SMB is added. The user can disconnect the pump or
+            // suspend the loop while the SMB waits for the pump to connect. Same rule as `LoopPlugin.applySMBRequest`.
+            aapsLogger.debug(LTag.PUMPQUEUE, "SMB bolus canceled. Running mode pauses the loop now")
+            r = pumpEnactResultProvider().enacted(false).success(false).comment(InterfacesStrings.pumpsuspended)
+        } else if (SmbIntervalGate.tooSoon(lastBolusTime, preferences.get(IntKey.ApsMaxSmbFrequency), dateUtil.now())) {
             aapsLogger.debug(LTag.APS, "SMB requested but still in ${preferences.get(IntKey.ApsMaxSmbFrequency)} min interval")
             r = pumpEnactResultProvider().enacted(false).success(false).comment("SMB requested but still in ${preferences.get(IntKey.ApsMaxSmbFrequency)} min interval")
         } else if (detailedBolusInfo.deliverAtTheLatest != 0L && detailedBolusInfo.deliverAtTheLatest + T.mins(1).msecs() > Clock.System.now().toEpochMilliseconds()) {
@@ -52,6 +58,20 @@ class CommandSMBBolus(
         bolusProgressData.clear(bolusGeneration)
         return r
     }
+
+    /**
+     * True when the running mode does not allow loop dosing now. If the mode cannot be read, the SMB is not
+     * given: unlike a user bolus, a dropped SMB is safe, because the next loop run calculates again.
+     */
+    private suspend fun loopPausedNow(): Boolean =
+        try {
+            persistenceLayer.getRunningModeActiveAt(dateUtil.now()).mode.pausesLoopExecution()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            aapsLogger.warn(LTag.PUMPQUEUE, "SMB: failed to read running mode, SMB not given: ${e.message}")
+            true
+        }
 
     override fun status(): String = rh.gs(CoreUiStrings.smb_bolus_u, detailedBolusInfo.insulin)
 
