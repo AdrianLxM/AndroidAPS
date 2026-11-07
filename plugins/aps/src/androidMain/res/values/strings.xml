@@ -51,6 +51,7 @@
     <string name="zero_basal_not_set">The pump did not accept the zero temp basal. It may still be giving basal insulin. Check the pump.</string>
     <string name="description_loop">Activate or deactivate the implementation triggering the loop.</string>
     <string name="no_aps_selected">NO APS SELECTED OR PROVIDED RESULT</string>
+    <string name="profile_basal_zero_no_percent">The profile basal is 0 U/h now. A temp basal in percent cannot be calculated.</string>
     <string name="ignore5m">Ignore 5m</string>
     <string name="ignore15m">Ignore 15m</string>
     <string name="ignore30m">Ignore 30m</string>

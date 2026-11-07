@@ -595,7 +595,18 @@ class LoopPlugin(
             if (pump.pumpDescription.tempBasalStyle == PumpDescription.PERCENT && allowPercentage()) {
                 apsResult.usePercent = true
             }
-            apsResult.percent = (apsResult.rate / profile.getBasal() * 100).toInt()
+            val percent = basalPercent(apsResult.rate, profile.getBasal())
+            if (percent == null) {
+                // A 0 U/h block in the running profile. Every percent of 0 U/h is 0 U/h, so a percent
+                // pump cannot follow the request: stop this run and leave the pump as it is.
+                // A pump with absolute rates does not use the percent, so the loop goes on there.
+                aapsLogger.error(LTag.APS, "Profile basal is ${profile.getBasal()} U/h, the temp basal cannot be given in percent")
+                if (apsResult.usePercent) {
+                    rxBus.send(EventLoopSetLastRunGui(rh.gs(ApsStrings.profile_basal_zero_no_percent)))
+                    return@withContext
+                }
+            }
+            apsResult.percent = percent ?: 0
 
             // check rate for constraints
             val resultAfterConstraints = apsResult.newAndClone()
