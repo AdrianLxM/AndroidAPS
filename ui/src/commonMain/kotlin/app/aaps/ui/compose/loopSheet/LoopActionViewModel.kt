@@ -33,7 +33,9 @@ import kotlinx.coroutines.launch
 data class LoopActionUiState(
     val actionAvailable: Boolean = false,
     val request: String = "",
-    val reason: String = ""
+    val reason: String = "",
+    /** `lastAPSRun` of the shown suggestion. Accept sends it, so a newer suggestion is not enacted in its place. */
+    val suggestionTime: Long = 0L
 )
 
 // Registers itself: @ViewModelKey infers the key from the class. No graph entry, and deliberately
@@ -73,10 +75,16 @@ class LoopActionViewModel(
         val pump = activePlugin.activePump
         val profile = profileFunction.getProfile()
         val lastRun = loop.lastRun
+        // A loop run writes the new result into the same LastRun object. Read the time first and the
+        // shown text right after it, before any suspension, so the text belongs to that time or to a
+        // newer run - and a newer run makes the accept refuse instead of enacting unseen text.
+        val suggestionTime = lastRun?.lastAPSRun ?: 0L
+        val constraintsProcessed = lastRun?.constraintsProcessed
+        val lastOpenModeAccept = lastRun?.lastOpenModeAccept ?: 0L
 
         val resultAvailable = lastRun != null &&
-            (lastRun.lastOpenModeAccept == 0L || lastRun.lastOpenModeAccept < lastRun.lastAPSRun) &&
-            lastRun.constraintsProcessed?.isChangeRequested() == true
+            (lastOpenModeAccept == 0L || lastOpenModeAccept < suggestionTime) &&
+            constraintsProcessed?.isChangeRequested() == true
 
         val available = resultAvailable &&
             pump.isInitialized() &&
@@ -88,8 +96,9 @@ class LoopActionViewModel(
             if (available) {
                 LoopActionUiState(
                     actionAvailable = true,
-                    request = lastRun.constraintsProcessed?.resultAsString().orEmpty(),
-                    reason = rh.gs(UiStrings.loop_accept_set_basal_question)
+                    request = constraintsProcessed?.resultAsString().orEmpty(),
+                    reason = rh.gs(UiStrings.loop_accept_set_basal_question),
+                    suggestionTime = suggestionTime
                 )
             } else {
                 LoopActionUiState(actionAvailable = false)

@@ -979,7 +979,8 @@ class LoopPluginTest : TestBaseWithProfile() {
             }
         }
 
-        val accept = launch { loopPlugin.acceptChangeRequest() }
+        val shownSuggestion = loopPlugin.lastRun!!.lastAPSRun
+        val accept = launch { loopPlugin.acceptChangeRequest(shownSuggestion) }
         commandStarted.await()
         accept.cancel()
         releaseCommand.complete(Unit)
@@ -1022,7 +1023,7 @@ class LoopPluginTest : TestBaseWithProfile() {
             this.lastAPSRun = dateUtil.now()
         }
 
-        loopPlugin.acceptChangeRequest()
+        loopPlugin.acceptChangeRequest(loopPlugin.lastRun!!.lastAPSRun)
 
         verify(commandQueue, never()).tempBasalAbsolute(any(), any(), any(), any(), any())
         verify(commandQueue, never()).tempBasalPercent(any(), any(), any(), any(), any())
@@ -1033,8 +1034,10 @@ class LoopPluginTest : TestBaseWithProfile() {
      * Sets up everything so that accepting WOULD enact a 2 U/h temp basal: an initialized pump that is
      * not suspended, a base rate, no running temp basal, and an open loop. Each test then breaks one
      * thing. Without this the early returns in applyTBRRequest pass the tests on their own.
+     *
+     * @return `lastAPSRun` of the prepared suggestion, which is what the phone and the watch send on accept
      */
-    private suspend fun prepareAcceptableRequest(mode: RM.Mode = RM.Mode.OPEN_LOOP, suggestionAge: Long = 0L) {
+    private suspend fun prepareAcceptableRequest(mode: RM.Mode = RM.Mode.OPEN_LOOP, suggestionAge: Long = 0L): Long {
         whenever(profileFunction.getProfile()).thenReturn(mock<EffectiveProfile>())
         whenever(virtualPumpPlugin.isInitialized()).thenReturn(true)
         whenever(virtualPumpPlugin.isSuspended()).thenReturn(false) // a software pause does not suspend the pump
@@ -1052,18 +1055,20 @@ class LoopPluginTest : TestBaseWithProfile() {
         whenever(request.rate).thenReturn(2.0)
         whenever(request.duration).thenReturn(30)
         whenever(request.usePercent).thenReturn(false)
+        val lastAPSRun = dateUtil.now() - suggestionAge
         loopPlugin.lastRun = Loop.LastRun().apply {
             this.constraintsProcessed = request
-            this.lastAPSRun = dateUtil.now() - suggestionAge
+            this.lastAPSRun = lastAPSRun
         }
+        return lastAPSRun
     }
 
     /** Issue #5192: the suggestion can wait on the watch after the user paused the loop. */
     @Test
     fun `acceptChangeRequest does not enact while the loop is suspended by the user`() = runTest {
-        prepareAcceptableRequest(mode = RM.Mode.SUSPENDED_BY_USER)
+        val shown = prepareAcceptableRequest(mode = RM.Mode.SUSPENDED_BY_USER)
 
-        val refused = loopPlugin.acceptChangeRequest()
+        val refused = loopPlugin.acceptChangeRequest(shown)
 
         verify(commandQueue, never()).tempBasalAbsolute(any(), any(), any(), any(), any())
         assertThat(refused).isEqualTo("Loop suspended")
@@ -1074,18 +1079,18 @@ class LoopPluginTest : TestBaseWithProfile() {
     /** In SUPER_BOLUS the accepted temp basal would replace the zero temp basal of the super bolus. */
     @Test
     fun `acceptChangeRequest does not enact during a super bolus`() = runTest {
-        prepareAcceptableRequest(mode = RM.Mode.SUPER_BOLUS)
+        val shown = prepareAcceptableRequest(mode = RM.Mode.SUPER_BOLUS)
 
-        assertThat(loopPlugin.acceptChangeRequest()).isEqualTo("Loop suspended")
+        assertThat(loopPlugin.acceptChangeRequest(shown)).isEqualTo("Loop suspended")
         verify(commandQueue, never()).tempBasalAbsolute(any(), any(), any(), any(), any())
     }
 
     /** A suggestion older than an old BG was calculated from data that is not actual any more. */
     @Test
     fun `acceptChangeRequest does not enact a suggestion older than an old BG`() = runTest {
-        prepareAcceptableRequest(suggestionAge = T.mins(Constants.OLD_BG_MINUTES).msecs() + 1)
+        val shown = prepareAcceptableRequest(suggestionAge = T.mins(Constants.OLD_BG_MINUTES).msecs() + 1)
 
-        assertThat(loopPlugin.acceptChangeRequest()).isEqualTo("This suggestion is too old. Nothing was sent to the pump. Wait for the next one.")
+        assertThat(loopPlugin.acceptChangeRequest(shown)).isEqualTo("This suggestion is too old. Nothing was sent to the pump. Wait for the next one.")
         verify(commandQueue, never()).tempBasalAbsolute(any(), any(), any(), any(), any())
         verify(loopNotifier).dismiss()
     }
@@ -1093,11 +1098,74 @@ class LoopPluginTest : TestBaseWithProfile() {
     /** The control case: the same setup, in open loop and fresh, does enact. */
     @Test
     fun `acceptChangeRequest enacts a fresh suggestion in open loop`() = runTest {
-        prepareAcceptableRequest(suggestionAge = T.mins(Constants.OLD_BG_MINUTES).msecs() - 1000)
+        val shown = prepareAcceptableRequest(suggestionAge = T.mins(Constants.OLD_BG_MINUTES).msecs() - 1000)
         whenever(commandQueue.tempBasalAbsolute(any(), any(), any(), any(), any())).thenReturn(pumpEnactResultProvider().enacted(true).success(true))
 
-        assertThat(loopPlugin.acceptChangeRequest()).isNull()
+        assertThat(loopPlugin.acceptChangeRequest(shown)).isNull()
         verify(commandQueue).tempBasalAbsolute(any(), any(), any(), any(), any())
+        assertThat(loopPlugin.lastRun?.lastOpenModeAccept).isNotEqualTo(0L)
+    }
+
+    /**
+     * The user accepted suggestion A, but a loop run has replaced it with B in the meantime. B was
+     * never shown, so it must not be enacted in place of A.
+     */
+    @Test
+    fun `acceptChangeRequest does not enact a suggestion that replaced the shown one`() = runTest {
+        val shown = prepareAcceptableRequest()
+        // A new loop run stores its result in the same LastRun object, with a new time.
+        loopPlugin.lastRun?.lastAPSRun = shown + T.mins(5).msecs()
+
+        assertThat(loopPlugin.acceptChangeRequest(shown))
+            .isEqualTo("There is a new suggestion. Nothing was sent to the pump. Check the new one and accept again.")
+        verify(commandQueue, never()).tempBasalAbsolute(any(), any(), any(), any(), any())
+        verify(commandQueue, never()).tempBasalPercent(any(), any(), any(), any(), any())
+        assertThat(loopPlugin.lastRun?.lastOpenModeAccept).isEqualTo(0L)
+        // The new suggestion is the current one and stays offered.
+        verify(loopNotifier, never()).dismiss()
+    }
+
+    /**
+     * The watch keeps the notification after the user switched to closed loop. Accepting it then
+     * would apply a closed loop result a second time, outside the loop run.
+     */
+    @Test
+    fun `acceptChangeRequest does not enact in closed loop`() = runTest {
+        val shown = prepareAcceptableRequest(mode = RM.Mode.CLOSED_LOOP)
+
+        assertThat(loopPlugin.acceptChangeRequest(shown)).isEqualTo("Open loop is not active. Nothing was sent to the pump.")
+        verify(commandQueue, never()).tempBasalAbsolute(any(), any(), any(), any(), any())
+        verify(loopNotifier).dismiss()
+    }
+
+    /**
+     * A loop run holds the lock while it calculates and writes the new result into LastRun. Accept
+     * must not read the suggestion halfway through that, so it refuses and does not wait.
+     */
+    @Test
+    fun `acceptChangeRequest does not enact while a loop run is in progress`() = runTest {
+        val shown = prepareAcceptableRequest()
+        loopPlugin.invokeMutex.lock()
+        try {
+            assertThat(loopPlugin.acceptChangeRequest(shown))
+                .isEqualTo("The loop is calculating now. Nothing was sent to the pump. Try again in a moment.")
+        } finally {
+            loopPlugin.invokeMutex.unlock()
+        }
+        verify(commandQueue, never()).tempBasalAbsolute(any(), any(), any(), any(), any())
+        // And the lock is free again after a normal accept, so the next loop run is not blocked.
+        whenever(commandQueue.tempBasalAbsolute(any(), any(), any(), any(), any())).thenReturn(pumpEnactResultProvider().enacted(true).success(true))
+        assertThat(loopPlugin.acceptChangeRequest(shown)).isNull()
+        assertThat(loopPlugin.invokeMutex.isLocked).isFalse()
+    }
+
+    /** The same for LGS: only an open loop asks the user. */
+    @Test
+    fun `acceptChangeRequest does not enact in closed loop LGS`() = runTest {
+        val shown = prepareAcceptableRequest(mode = RM.Mode.CLOSED_LOOP_LGS)
+
+        assertThat(loopPlugin.acceptChangeRequest(shown)).isEqualTo("Open loop is not active. Nothing was sent to the pump.")
+        verify(commandQueue, never()).tempBasalAbsolute(any(), any(), any(), any(), any())
     }
 
     /**
