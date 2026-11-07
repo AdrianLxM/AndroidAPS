@@ -60,19 +60,16 @@ class RunningModeExpiryScheduler(
     internal suspend fun rescheduleFromCurrentMode() {
         val now = dateUtil.now()
         val active = persistenceLayer.getRunningModeActiveAt(now)
-        if (!active.mode.mustBeTemporary() || active.duration <= 0L) {
+        // A mode without a planned end has no expiry to schedule. That is a permanent mode and the two
+        // "endless" durations: RM.ENDLESS_DURATION (constraint-forced modes) and RM.PUMP_SUSPEND_DURATION
+        // (SUSPENDED_BY_PUMP). Without this check a pump suspend scheduled a job about 4000 years ahead.
+        if (!active.mode.mustBeTemporary() || active.isEndless) {
             cancelScheduled()
             return
         }
-        // Long.MAX_VALUE duration is the "open-ended" sentinel (e.g. SUSPENDED_BY_PUMP from
-        // precheck, constraint-forced modes). No expiry to schedule.
-        if (active.duration == Long.MAX_VALUE) {
-            cancelScheduled()
-            return
-        }
-        // Overflow guard: timestamp + duration can wrap when duration is near Long.MAX_VALUE.
-        val endTime = active.timestamp + active.duration
-        if (endTime < active.timestamp) {
+        // RM.end does not overflow; a duration so big that it would is endless and already handled.
+        val endTime = active.end
+        if (endTime == Long.MAX_VALUE) {
             cancelScheduled()
             return
         }

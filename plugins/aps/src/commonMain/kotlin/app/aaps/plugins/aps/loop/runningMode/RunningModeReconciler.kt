@@ -241,8 +241,8 @@ class RunningModeReconciler(
     private suspend fun zeroTbrNeedsRenewal(activeMode: RM, now: Long): Boolean {
         val tbr = processedTbrEbData.getTempBasalIncludingConvertedExtended(now) ?: return true
         if (!isEffectivelyZero(tbr)) return true
-        val remaining = remainingMinutes(activeMode, now)
-        val modeEnd = if (remaining == Int.MAX_VALUE) Long.MAX_VALUE else activeMode.timestamp + activeMode.duration
+        // Long.MAX_VALUE for a mode without a planned end
+        val modeEnd = activeMode.end
         return tbr.end < modeEnd && tbr.end - now < RENEW_BEFORE_END_MS
     }
 
@@ -392,10 +392,11 @@ class RunningModeReconciler(
 
     private fun isEffectivelyZero(tbr: TB): Boolean = tbr.rate == 0.0
 
+    /** [Int.MAX_VALUE] for a mode without a planned end (permanent, or an "endless" duration, see [RM.isEndless]). */
     private fun remainingMinutes(activeMode: RM, now: Long): Int {
-        if (activeMode.duration <= 0L) return Int.MAX_VALUE
-        val endMs = activeMode.timestamp + activeMode.duration
-        if (endMs < 0L) return Int.MAX_VALUE
+        if (activeMode.isEndless) return Int.MAX_VALUE
+        val endMs = activeMode.end
+        if (endMs == Long.MAX_VALUE) return Int.MAX_VALUE
         val remainingMs = endMs - now
         return (remainingMs / 60_000L).toInt().coerceAtLeast(0)
     }

@@ -148,14 +148,29 @@ class RunningModeExpirySchedulerTest : TestBase() {
     }
 
     @Test
+    fun `pump suspend with Int MAX_VALUE minutes does not schedule a job 4000 years ahead`() = runTest {
+        // LoopPlugin.runningModePreCheck stores SUSPENDED_BY_PUMP with Int.MAX_VALUE minutes
+        // (RM.PUMP_SUSPEND_DURATION). timestamp + duration does not overflow here, so only the
+        // "endless" check stops the scheduler from queueing a job about 4000 years in the future.
+        val mode = RM(
+            id = 99, timestamp = now - T.mins(5).msecs(),
+            mode = RM.Mode.SUSPENDED_BY_PUMP, duration = T.mins(Int.MAX_VALUE.toLong()).msecs(), autoForced = true
+        )
+        whenever(persistenceLayer.getRunningModeActiveAt(anyLong())).thenReturn(mode)
+        scheduler.start()
+        verify(workManager).cancelUniqueWork(eq(RunningModeExpiryWorker.WORK_NAME))
+        verify(workManager, never()).enqueueUniqueWork(any<String>(), any(), any<OneTimeWorkRequest>())
+    }
+
+    @Test
     fun `Long MAX_VALUE duration sentinel cancels rather than overflowing WorkManager delay`() = runTest {
-        // SUSPENDED_BY_PUMP uses Long.MAX_VALUE for "open-ended". Without guards, timestamp +
+        // RM.ENDLESS_DURATION (Long.MAX_VALUE) means "no end". Without guards, timestamp +
         // Long.MAX_VALUE overflows, and the double-overflow in (endTime - now) can wrap to a
         // large positive delay that WorkManager's setInitialDelay rejects with
         // IllegalArgumentException. The scheduler must short-circuit these instead.
         val mode = RM(
             id = 99, timestamp = now,
-            mode = RM.Mode.SUSPENDED_BY_PUMP, duration = Long.MAX_VALUE
+            mode = RM.Mode.SUSPENDED_BY_USER, duration = RM.ENDLESS_DURATION
         )
         whenever(persistenceLayer.getRunningModeActiveAt(anyLong())).thenReturn(mode)
         scheduler.start()

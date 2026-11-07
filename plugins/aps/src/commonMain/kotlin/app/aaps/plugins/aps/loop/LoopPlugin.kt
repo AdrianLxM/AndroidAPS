@@ -255,8 +255,9 @@ class LoopPlugin(
         runningModeRecord().let { runningMode ->
             when {
                 runningMode.mode.pausesLoopExecution().not() -> 0
-                runningMode.isTemporary()                    -> T.msecs(runningMode.timestamp + runningMode.duration - dateUtil.now()).mins().toInt()
-                else                                         -> Int.MAX_VALUE
+                // Permanent, or one of the two "endless" durations (a pump suspend has no planned end)
+                runningMode.isEndless                        -> Int.MAX_VALUE
+                else                                         -> T.msecs(runningMode.end - dateUtil.now()).mins().toInt()
             }
         }
 
@@ -432,6 +433,8 @@ class LoopPlugin(
                         mode = RM.Mode.SUSPENDED_BY_PUMP,
                         autoForced = true,
                         reasons = rh.gs(InterfacesStrings.pumpsuspended),
+                        // Stored as RM.PUMP_SUSPEND_DURATION, which counts as "endless" (RM.isEndless).
+                        // Not RM.ENDLESS_DURATION: this value goes to Nightscout, see the KDoc there.
                         durationInMinutes = Int.MAX_VALUE,
                         action = Action.SUSPEND,
                         source = Sources.Loop
@@ -484,7 +487,7 @@ class LoopPlugin(
                         mode = newMode,
                         reasons = reasons,
                         autoForced = true,
-                        duration = Long.MAX_VALUE
+                        duration = RM.ENDLESS_DURATION
                     ),
                     action = action,
                     source = Sources.Loop,
