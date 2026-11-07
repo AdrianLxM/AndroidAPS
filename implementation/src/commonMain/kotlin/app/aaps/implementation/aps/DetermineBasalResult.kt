@@ -324,7 +324,10 @@ class DetermineBasalResult(
                 aapsLogger.debug(LTag.APS, "FALSE: No temp running, asking cancel temp")
                 return false
             }
-            if (activeTemp != null && abs(percent - activeTemp.convertedToPercent(now, profile)) < pump.pumpDescription.basalStep) {
+            // Compare in percent with the percent step. basalStep is in U/h, so it made this "exactly equal".
+            // A step of 0 (not set by the driver) still means "exactly equal".
+            val percentStep = max(pump.pumpDescription.tempPercentStep, 1)
+            if (activeTemp != null && abs(percent - activeTemp.convertedToPercent(now, profile)) < percentStep) {
                 aapsLogger.debug(LTag.APS, "FALSE: Temp equal")
                 return false
             }

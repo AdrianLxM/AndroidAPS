@@ -1,5 +1,6 @@
 package app.aaps.implementation.aps
 
+import app.aaps.core.data.model.TB
 import app.aaps.core.data.pump.defs.PumpDescription
 import app.aaps.core.interfaces.aps.APSResult
 import app.aaps.core.interfaces.aps.RT
@@ -168,5 +169,27 @@ class DetermineBasalResultTest : TestBaseWithProfile() {
 
         assertThat(absoluteRequest(1.4)).isFalse()
         assertThat(absoluteRequest(1.5)).isTrue()
+    }
+
+    /**
+     * Open loop, a 150 % temp is running, and every change is "big" (minimum change 0 %). Then only the
+     * "temp equal" check can drop a request. It must compare with the percent step of the pump (10 % here),
+     * not with the basal step in U/h, which made it an "exactly equal" check.
+     */
+    @Test
+    fun `open loop does not report a percent temp that differs by less than the percent step`() = runBlocking<Unit> {
+        whenever(constraintsChecker.isClosedLoopAllowed()).thenReturn(ConstraintObject(false, aapsLogger))
+        whenever(processedTbrEbData.getTempBasalIncludingConvertedExtended(any()))
+            .thenReturn(TB(timestamp = 0, utcOffset = 0, type = TB.Type.NORMAL, isAbsolute = false, rate = 150.0, duration = 60 * 60 * 1000L))
+        whenever(profileFunction.getProfile()).thenReturn(effectiveProfile)
+        whenever(preferences.get(IntKey.LoopOpenModeMinChange)).thenReturn(0)
+        testPumpPlugin.pumpDescription.tempBasalStyle = PumpDescription.PERCENT
+        testPumpPlugin.pumpDescription.tempPercentStep = 10
+
+        assertThat(percentRequest(150)).isFalse()
+        assertThat(percentRequest(155)).isFalse()
+        assertThat(percentRequest(145)).isFalse()
+        assertThat(percentRequest(160)).isTrue()
+        assertThat(percentRequest(140)).isTrue()
     }
 }
