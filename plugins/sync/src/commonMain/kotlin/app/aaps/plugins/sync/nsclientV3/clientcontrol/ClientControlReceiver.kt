@@ -31,6 +31,7 @@ import app.aaps.core.keys.interfaces.BooleanNonPreferenceKey
 import app.aaps.core.keys.interfaces.ClientRole
 import app.aaps.core.keys.interfaces.DoubleNonPreferenceKey
 import app.aaps.core.keys.interfaces.IntNonPreferenceKey
+import app.aaps.core.keys.interfaces.PreferenceValueCheck
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.keys.interfaces.StringNonPreferenceKey
 import app.aaps.core.keys.interfaces.SyncDirection
@@ -886,6 +887,7 @@ class ClientControlReceiver(
                         aapsLogger.warn(LTag.NSCLIENT, "ClientControl: preferences.update from ${entry.name} bad int for $keyString: '${pushed.value}'")
                         return@forEach
                     }
+                    if (rejectedValue(entry, keyString, pushed.value, PreferenceValueCheck.rejectReason(key, value))) return@forEach
                     preferences.putRemote(key, value, pushed.lastModified)
                     applied += "$keyString=$value"
                 }
@@ -896,6 +898,7 @@ class ClientControlReceiver(
                         aapsLogger.warn(LTag.NSCLIENT, "ClientControl: preferences.update from ${entry.name} bad double for $keyString: '${pushed.value}'")
                         return@forEach
                     }
+                    if (rejectedValue(entry, keyString, pushed.value, PreferenceValueCheck.rejectReason(key, value))) return@forEach
                     preferences.putRemote(key, value, pushed.lastModified)
                     applied += "$keyString=$value"
                 }
@@ -906,6 +909,7 @@ class ClientControlReceiver(
                         aapsLogger.warn(LTag.NSCLIENT, "ClientControl: preferences.update from ${entry.name} bad double for $keyString: '${pushed.value}'")
                         return@forEach
                     }
+                    if (rejectedValue(entry, keyString, pushed.value, PreferenceValueCheck.rejectReason(key, value))) return@forEach
                     preferences.putRemote(key, value, pushed.lastModified)   // raw mg/dl
                     applied += "$keyString=$value"
                 }
@@ -924,6 +928,19 @@ class ClientControlReceiver(
         // Best-effort merge: per-key rejects (unknown/stale/bad-type) are logged but the batch as a
         // whole is acknowledged Ok.
         return AckOutcome(AckStatus.Ok, null)
+    }
+
+    /**
+     * True (and logged) when a pushed number parses but must not be stored: NaN, Infinity, or outside
+     * the key's min..max. The settings screen never lets such a value through, but a pushed value is
+     * only text. A NaN max IOB, max bolus or max daily multiplier would make the user's own limit
+     * disappear (only the hard limit is left), and a max SMB frequency of 0 turns off the SMB interval
+     * check. The master keeps its current value, and the cold republish sends it back to the client.
+     */
+    private fun rejectedValue(entry: AuthorizedClient, keyString: String, text: String, reason: String?): Boolean {
+        if (reason == null) return false
+        aapsLogger.warn(LTag.NSCLIENT, "ClientControl: preferences.update from ${entry.name} rejected $keyString='$text' ($reason)")
+        return true
     }
 
     private fun SceneAutomationResult.tag(): String = when (this) {

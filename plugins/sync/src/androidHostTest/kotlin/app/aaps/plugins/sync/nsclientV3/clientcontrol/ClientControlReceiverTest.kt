@@ -25,12 +25,16 @@ import app.aaps.core.interfaces.scenes.SceneAutomationApi
 import app.aaps.core.interfaces.scenes.SceneAutomationResult
 import app.aaps.core.interfaces.utils.DateUtil
 import app.aaps.core.keys.BooleanKey
+import app.aaps.core.keys.DoubleKey
 import app.aaps.core.keys.IntKey
 import app.aaps.core.keys.LongComposedKey
 import app.aaps.core.keys.StringKey
 import app.aaps.core.keys.StringNonKey
 import app.aaps.core.keys.interfaces.BooleanNonPreferenceKey
 import app.aaps.core.keys.interfaces.ClientRole
+import app.aaps.core.keys.interfaces.DoubleNonPreferenceKey
+import app.aaps.core.keys.interfaces.IntNonPreferenceKey
+import app.aaps.core.keys.interfaces.NonPreferenceKey
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.keys.interfaces.TextRef
 import app.aaps.core.nssdk.interfaces.NSAndroidClient
@@ -1184,6 +1188,102 @@ internal class ClientControlReceiverTest {
         sendPreferencesUpdate(clientId, secret, mapOf("not_a_synced_key" to PrefEntry("true", 9_000L)))
 
         verify(preferences, never()).putRemote(any<BooleanNonPreferenceKey>(), any(), any())
+    }
+
+    /** Makes [key] a known synced key whose stored stamp is older than the push, so only the value check decides. */
+    private fun knownOlderKey(key: NonPreferenceKey) {
+        whenever(preferences.get(key.key)).thenReturn(key)
+        whenever(preferences.get(LongComposedKey.SyncedPrefModified, key.key)).thenReturn(1_000L)
+    }
+
+    /** "NaN" parses as a double. A NaN max IOB would leave only the hard limit, so it must not be stored. */
+    @Test
+    fun preferencesUpdateRejectsNaNDouble() = runTest {
+        val (clientId, secret) = pair()
+        authorizedRepository.markActive(clientId, counterReceived = 1L, now = now - 5_000L)
+        knownOlderKey(DoubleKey.ApsSmbMaxIob)
+
+        sendPreferencesUpdate(clientId, secret, mapOf(DoubleKey.ApsSmbMaxIob.key to PrefEntry("NaN", 2_000L)))
+
+        verify(preferences, never()).putRemote(any<DoubleNonPreferenceKey>(), any(), any())
+        // The client still gets the master's value back.
+        verify(runningConfigurationPublisher).requestColdRepublish()
+    }
+
+    @Test
+    fun preferencesUpdateRejectsInfiniteDouble() = runTest {
+        val (clientId, secret) = pair()
+        authorizedRepository.markActive(clientId, counterReceived = 1L, now = now - 5_000L)
+        knownOlderKey(DoubleKey.SafetyMaxBolus)
+
+        sendPreferencesUpdate(clientId, secret, mapOf(DoubleKey.SafetyMaxBolus.key to PrefEntry("Infinity", 2_000L)))
+
+        verify(preferences, never()).putRemote(any<DoubleNonPreferenceKey>(), any(), any())
+    }
+
+    @Test
+    fun preferencesUpdateRejectsDoubleAboveMax() = runTest {
+        val (clientId, secret) = pair()
+        authorizedRepository.markActive(clientId, counterReceived = 1L, now = now - 5_000L)
+        knownOlderKey(DoubleKey.ApsMaxDailyMultiplier)   // 1.0 .. 10.0
+
+        sendPreferencesUpdate(clientId, secret, mapOf(DoubleKey.ApsMaxDailyMultiplier.key to PrefEntry("11", 2_000L)))
+
+        verify(preferences, never()).putRemote(any<DoubleNonPreferenceKey>(), any(), any())
+    }
+
+    @Test
+    fun preferencesUpdateAppliesDoubleInRange() = runTest {
+        val (clientId, secret) = pair()
+        authorizedRepository.markActive(clientId, counterReceived = 1L, now = now - 5_000L)
+        knownOlderKey(DoubleKey.ApsSmbMaxIob)
+
+        sendPreferencesUpdate(clientId, secret, mapOf(DoubleKey.ApsSmbMaxIob.key to PrefEntry("2.5", 2_000L)))
+
+        verify(preferences).putRemote(DoubleKey.ApsSmbMaxIob, 2.5, 2_000L)
+    }
+
+    /** A max SMB frequency of 0 would switch off the SMB interval check in `LoopPlugin.applySMBRequest`. */
+    @Test
+    fun preferencesUpdateRejectsIntBelowMin() = runTest {
+        val (clientId, secret) = pair()
+        authorizedRepository.markActive(clientId, counterReceived = 1L, now = now - 5_000L)
+        knownOlderKey(IntKey.ApsMaxSmbFrequency)   // 1 .. 10
+
+        sendPreferencesUpdate(clientId, secret, mapOf(IntKey.ApsMaxSmbFrequency.key to PrefEntry("0", 2_000L)))
+
+        verify(preferences, never()).putRemote(any<IntNonPreferenceKey>(), any(), any())
+    }
+
+    @Test
+    fun preferencesUpdateRejectsIntAboveMax() = runTest {
+        val (clientId, secret) = pair()
+        authorizedRepository.markActive(clientId, counterReceived = 1L, now = now - 5_000L)
+        knownOlderKey(IntKey.ApsMaxMinutesOfBasalToLimitSmb)   // 15 .. 120
+
+        sendPreferencesUpdate(clientId, secret, mapOf(IntKey.ApsMaxMinutesOfBasalToLimitSmb.key to PrefEntry("1000", 2_000L)))
+
+        verify(preferences, never()).putRemote(any<IntNonPreferenceKey>(), any(), any())
+    }
+
+    /** One bad value must not stop the good ones in the same message. */
+    @Test
+    fun preferencesUpdateRejectsOnlyTheBadKey() = runTest {
+        val (clientId, secret) = pair()
+        authorizedRepository.markActive(clientId, counterReceived = 1L, now = now - 5_000L)
+        knownOlderKey(IntKey.ApsMaxSmbFrequency)
+        knownOlderKey(IntKey.ApsMaxMinutesOfBasalToLimitSmb)
+
+        sendPreferencesUpdate(
+            clientId, secret,
+            mapOf(
+                IntKey.ApsMaxSmbFrequency.key to PrefEntry("0", 2_000L),
+                IntKey.ApsMaxMinutesOfBasalToLimitSmb.key to PrefEntry("60", 2_000L)
+            )
+        )
+
+        verify(preferences, never()).putRemote(eq(IntKey.ApsMaxSmbFrequency), any(), any())
+        verify(preferences).putRemote(IntKey.ApsMaxMinutesOfBasalToLimitSmb, 60, 2_000L)
     }
 
     // -- client roles -------------------------------------------------------------------------
