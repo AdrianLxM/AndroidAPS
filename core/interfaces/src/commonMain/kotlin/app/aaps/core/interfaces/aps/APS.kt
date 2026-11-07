@@ -15,6 +15,14 @@ interface APS {
     val lastAPSResult: APSResult?
 
     /**
+     * Why the last invocation gave no result, as a text for the user.
+     * Set when [lastAPSResult] is null because the algorithm stopped on purpose, for example
+     * no glucose data or a profile value out of hard limits.
+     * Null when there is a result, or when the algorithm does not give a reason.
+     */
+    val lastNoResultReason: String? get() = null
+
+    /**
      * Timestamp of last invocation
      */
     val lastAPSRun: Long

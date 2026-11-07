@@ -45,11 +45,11 @@ import app.aaps.core.objects.extensions.target
 import app.aaps.core.ui.CoreUiStrings
 import app.aaps.core.ui.compose.icons.IcPluginOpenAPS
 import app.aaps.core.ui.compose.preference.PreferenceSubScreenDef
-import app.aaps.core.utils.MidnightUtils
 import app.aaps.plugins.aps.ApsStrings
 import app.aaps.plugins.aps.events.EventOpenAPSUpdateGui
 import app.aaps.plugins.aps.events.EventResetOpenAPSGui
 import app.aaps.plugins.aps.keys.ApsIntentKey
+import app.aaps.plugins.aps.openAPS.checkApsInputHardLimits
 import app.aaps.plugins.aps.openAPSSMB.GlucoseStatusCalculatorSMB
 import dev.zacsweers.metro.AppScope
 import dev.zacsweers.metro.Inject
@@ -106,44 +106,47 @@ class OpenAPSAMAPlugin(
     override var lastAPSRun: Long = 0
     override val algorithm = APSResult.Algorithm.AMA
     override var lastAPSResult: APSResult? = null
+    override var lastNoResultReason: String? = null
 
     // No temp basal check here - see the note in OpenAPSSMBPlugin. SafetyPlugin.isLoopInvocationAllowed
     // owns that rule.
+
+    /** Keeps [reason] as [lastNoResultReason] and shows it on the APS screen. */
+    private fun reportNoResult(reason: String) {
+        lastNoResultReason = reason
+        rxBus.send(EventResetOpenAPSGui(reason))
+    }
 
     override suspend fun invoke(initiator: String, tempBasalFallback: Boolean) = withContext(Dispatchers.Default) {
 
         aapsLogger.debug(LTag.APS, "invoke from $initiator tempBasalFallback: $tempBasalFallback")
         lastAPSResult = null
+        lastNoResultReason = null
         val glucoseStatus = glucoseStatusProvider.glucoseStatusData
         val profile = profileFunction.getProfile()
         val pump = activePlugin.activePump
         if (profile == null) {
-            rxBus.send(EventResetOpenAPSGui(rh.gs(CoreUiStrings.no_profile_set)))
+            reportNoResult(rh.gs(CoreUiStrings.no_profile_set))
             aapsLogger.debug(LTag.APS, rh.gs(CoreUiStrings.no_profile_set))
             return@withContext
         }
         if (!isEnabled()) {
-            rxBus.send(EventResetOpenAPSGui(rh.gs(ApsStrings.openapsma_disabled)))
+            reportNoResult(rh.gs(ApsStrings.openapsma_disabled))
             aapsLogger.debug(LTag.APS, rh.gs(ApsStrings.openapsma_disabled))
             return@withContext
         }
         if (glucoseStatus == null) {
-            rxBus.send(EventResetOpenAPSGui(rh.gs(ApsStrings.openapsma_no_glucose_data)))
+            reportNoResult(rh.gs(ApsStrings.openapsma_no_glucose_data))
             aapsLogger.debug(LTag.APS, rh.gs(ApsStrings.openapsma_no_glucose_data))
             return@withContext
         }
         val inputConstraints = ConstraintObject(0.0, aapsLogger) // fake. only for collecting all results
 
-        if (!hardLimits.checkHardLimits(profile.iCfg.dia, InterfacesStrings.profile_dia, hardLimits.diaRange())) return@withContext
-        if (!hardLimits.checkHardLimits(
-                profile.getIcTimeFromMidnight(MidnightUtils.secondsFromMidnight()),
-                InterfacesStrings.profile_carbs_ratio_value,
-                hardLimits.icRange()
-            )
-        ) return@withContext
-        if (!hardLimits.checkHardLimits(profile.getIsfMgdl("OpenAPSAMAPlugin"), InterfacesStrings.profile_sensitivity_value, HardLimits.LIMIT_ISF)) return@withContext
-        if (!hardLimits.checkHardLimits(profile.getMaxDailyBasal(), CoreUiStrings.profile_max_daily_basal_value, 0.02, hardLimits.maxBasal())) return@withContext
-        if (!hardLimits.checkHardLimits(ch.fromPump(pump.baseBasalRate), CoreUiStrings.current_basal_value, 0.01, hardLimits.maxBasal())) return@withContext
+        checkApsInputHardLimits(hardLimits, rh, profile, ch.fromPump(pump.baseBasalRate), "OpenAPSAMAPlugin")?.let { reason ->
+            aapsLogger.debug(LTag.APS, reason)
+            reportNoResult(reason)
+            return@withContext
+        }
 
         val now = dateUtil.now()
         val tb = processedTbrEbData.getTempBasalIncludingConvertedExtended(now)
@@ -168,7 +171,7 @@ class OpenAPSAMAPlugin(
             if (constraintsChecker.isAutosensModeEnabled().value()) {
                 val autosensData = iobCobCalculator.getLastAutosensDataWithWaitForCalculationFinish("OpenAPSPlugin")
                 if (autosensData == null) {
-                    rxBus.send(EventResetOpenAPSGui(rh.gs(ApsStrings.openaps_no_as_data)))
+                    reportNoResult(rh.gs(ApsStrings.openaps_no_as_data))
                     return@withContext
                 }
                 autosensData.autosensResult
@@ -233,7 +236,7 @@ class OpenAPSAMAPlugin(
                 "sens=${oapsProfile.sens} carb_ratio=${oapsProfile.carb_ratio} autosensRatio=${autosensResult.ratio}"
             aapsLogger.error(LTag.APS, msg)
             fabricPrivacy.logException(IllegalStateException(msg))
-            rxBus.send(EventResetOpenAPSGui(msg))
+            reportNoResult(msg)
             rxBus.send(EventOpenAPSUpdateGui())
             return@withContext
         }

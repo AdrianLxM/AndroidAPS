@@ -578,14 +578,18 @@ class LoopPlugin(
             // Check if pump info is loaded
             if (ch.fromPump(pump.baseBasalRate) < 0.01) return@withContext
             val usedAPS = activePlugin.activeAPS ?: return@withContext
-            if (usedAPS.isEnabled()) {
+            val apsEnabled = usedAPS.isEnabled()
+            if (apsEnabled) {
                 usedAPS.invoke(initiator, tempBasalFallback)
                 apsResult = usedAPS.lastAPSResult
             }
 
-            // Check if we have any result
+            // Check if we have any result. When the APS stopped on purpose, show its reason
+            // instead of "No APS selected".
             if (apsResult == null) {
-                rxBus.send(EventLoopSetLastRunGui(rh.gs(ApsStrings.no_aps_selected)))
+                val message = noApsResultMessage(apsEnabled, usedAPS.lastNoResultReason, rh)
+                aapsLogger.debug(LTag.APS, message)
+                rxBus.send(EventLoopSetLastRunGui(message))
                 return@withContext
             }
 
