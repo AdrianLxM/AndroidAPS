@@ -1,6 +1,7 @@
 package app.aaps.implementation.queue.commands
 
 import app.aaps.core.data.model.BS
+import app.aaps.core.data.model.RM
 import app.aaps.core.data.time.T
 import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.pump.BolusProgressData
@@ -13,10 +14,13 @@ import app.aaps.implementation.pump.PumpEnactResultObject
 import app.aaps.shared.tests.TestBaseWithProfile
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.test.runTest
+import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.mockito.Mock
 import org.mockito.kotlin.doReturn
+import org.mockito.kotlin.any
 import org.mockito.kotlin.mock
+import org.mockito.kotlin.never
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
 
@@ -24,6 +28,15 @@ class CommandSMBBolusTest : TestBaseWithProfile() {
 
     @Mock lateinit var persistenceLayer: PersistenceLayer
     @Mock lateinit var bolusProgressData: BolusProgressData
+
+    @BeforeEach
+    fun setUpRunningMode() = runTest {
+        stubRunningMode(RM.Mode.CLOSED_LOOP)
+    }
+
+    private suspend fun stubRunningMode(mode: RM.Mode) {
+        whenever(persistenceLayer.getRunningModeActiveAt(any())).thenReturn(RM(timestamp = 0L, mode = mode, duration = 0L))
+    }
 
     private fun newCommand(info: DetailedBolusInfo) =
         CommandSMBBolus(
@@ -121,6 +134,51 @@ class CommandSMBBolusTest : TestBaseWithProfile() {
         val result = newCommand(info).execute()
 
         assertThat(result.success).isFalse()
+    }
+
+    // F12: the user disconnects the pump while the SMB waits in the queue.
+    @Test
+    fun `execute rejects without calling the pump when the pump is disconnected now`() = runTest {
+        whenever(preferences.get(IntKey.ApsMaxSmbFrequency)).thenReturn(3)
+        whenever(persistenceLayer.getNewestBolus()).thenReturn(null)
+        stubRunningMode(RM.Mode.DISCONNECTED_PUMP)
+        val pump = mock<PumpWithConcentration>()
+        whenever(activePlugin.activePump).thenReturn(pump)
+
+        val result = newCommand(smbInfo()).execute()
+
+        assertThat(result.success).isFalse()
+        assertThat(result.enacted).isFalse()
+        verify(pump, never()).deliverTreatment(any())
+        verify(bolusProgressData).clear(BOLUS_GENERATION)
+    }
+
+    @Test
+    fun `execute rejects without calling the pump when the loop is suspended by the user now`() = runTest {
+        whenever(preferences.get(IntKey.ApsMaxSmbFrequency)).thenReturn(3)
+        whenever(persistenceLayer.getNewestBolus()).thenReturn(null)
+        stubRunningMode(RM.Mode.SUSPENDED_BY_USER)
+        val pump = mock<PumpWithConcentration>()
+        whenever(activePlugin.activePump).thenReturn(pump)
+
+        val result = newCommand(smbInfo()).execute()
+
+        assertThat(result.success).isFalse()
+        verify(pump, never()).deliverTreatment(any())
+    }
+
+    @Test
+    fun `execute rejects without calling the pump when the running mode cannot be read`() = runTest {
+        whenever(preferences.get(IntKey.ApsMaxSmbFrequency)).thenReturn(3)
+        whenever(persistenceLayer.getNewestBolus()).thenReturn(null)
+        whenever(persistenceLayer.getRunningModeActiveAt(any())).thenThrow(IllegalStateException("db error"))
+        val pump = mock<PumpWithConcentration>()
+        whenever(activePlugin.activePump).thenReturn(pump)
+
+        val result = newCommand(smbInfo()).execute()
+
+        assertThat(result.success).isFalse()
+        verify(pump, never()).deliverTreatment(any())
     }
 
     @Test
