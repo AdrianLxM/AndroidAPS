@@ -34,6 +34,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlin.concurrent.Volatile
 
 /**
  * Reconciles pump delivery state with the currently active running mode.
@@ -80,14 +81,14 @@ class RunningModeReconciler(
     private var zeroTbrMissingSince: Long? = null
     private var lastZeroTbrAlarm: Long? = null
 
-    // The first two are written and read from different threads; [reconciledMode] / [reconciledRowId] expose them to
-    // instrumented tests that poll from a different thread than the appScope coroutine writing them;
+    // Volatile: the first two are written and read from different threads; [reconciledMode] / [reconciledRowId] expose
+    // them to instrumented tests that poll from a different thread than the appScope coroutine writing them;
     // without it there is no happens-before edge and a poll may never observe the write.
-    private var lastReconciledMode: RM.Mode? = null
-    private var lastReconciledRowId: Long? = null
+    @Volatile private var lastReconciledMode: RM.Mode? = null
+    @Volatile private var lastReconciledRowId: Long? = null
     private var lastReconciledDuration: Long = -1L
     private var lastReconciledTimestamp: Long = 0L
-    private var started = false
+    @Volatile private var started = false
     private var observerJob: Job? = null
 
     fun start() {
@@ -315,11 +316,6 @@ class RunningModeReconciler(
             aapsLogger.warn(LTag.APS, "RunningModeReconciler: queue is held (settings being applied), skipping zero-TBR issue")
             return
         }
-        // Worse here than anywhere else, which is why it is checked before the first command rather
-        // than before each one. This method cancels an extended bolus and THEN issues a zero temp
-        // basal. A hold granted between those two leaves the extended bolus cancelled, the zero TBR
-        // waiting in the queue, and FULL BASAL running - while the app believes the pump is suspended.
-        // Skipping is safe: the reconciler runs again and re-derives the whole state from the mode.
         val remainingMinutes = remainingMinutes(activeMode, now)
         if (remainingMinutes <= 0) {
             aapsLogger.debug(LTag.APS, "RunningModeReconciler: RM has no remaining time, skipping zero-TBR")

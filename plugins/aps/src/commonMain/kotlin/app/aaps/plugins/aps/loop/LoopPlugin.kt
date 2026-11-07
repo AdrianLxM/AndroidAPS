@@ -158,7 +158,11 @@ class LoopPlugin(
     // Volatile: this is now the only gate against a second automatic loop run for the same BG. It is
     // written by the calculation worker thread and read by the next one, which may be a different one.
     @Volatile override var lastBgTriggeredRun: Long = 0
-    private var carbsSuggestionsSuspendedUntil: Long = 0
+    // Volatile: written by disableCarbSuggestions (UI thread, or the notification action) and read by
+    // invoke on Dispatchers.Default. Only plain writes, no read-modify-write, so Volatile is enough.
+    @Volatile private var carbsSuggestionsSuspendedUntil: Long = 0
+    // Read and written only inside invoke, under invokeMutex. The mutex already makes the value
+    // visible to the next run, so no Volatile is needed.
     private var prevCarbsreq = 0
     override var lastRun: LastRun? = null
     override var closedLoopEnabled: Constraint<Boolean>? = null
@@ -768,8 +772,9 @@ class LoopPlugin(
     }
 
     override fun disableCarbSuggestions(durationMinutes: Int) {
-        carbsSuggestionsSuspendedUntil = dateUtil.now() + durationMinutes * 60 * 1000
-        aapsLogger.debug(LTag.CORE, "CarbSuggestion disabled until ${dateUtil.dateAndTimeAndSecondsString(carbsSuggestionsSuspendedUntil)}")
+        val suspendedUntil = dateUtil.now() + durationMinutes * 60 * 1000
+        carbsSuggestionsSuspendedUntil = suspendedUntil
+        aapsLogger.debug(LTag.CORE, "CarbSuggestion disabled until ${dateUtil.dateAndTimeAndSecondsString(suspendedUntil)}")
         dismissSuggestion()
     }
 
@@ -1065,7 +1070,7 @@ class LoopPlugin(
         var enacted: JsonObject? = null
         lastRun?.let { lastRun ->
             if (lastRun.lastAPSRun > dateUtil.now() - 300 * 1000L) {
-                // do not send if result is older than 1 min
+                // do not send if result is older than 5 min
                 // A client of this version works the ISF for carbs out itself from the stored results
                 // (IsfForCarbs). The finished value stays in the device status for older clients.
                 val now = dateUtil.now()
