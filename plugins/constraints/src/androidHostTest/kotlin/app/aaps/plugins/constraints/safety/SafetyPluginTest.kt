@@ -31,6 +31,7 @@ import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.mockito.ArgumentMatchers.anyLong
 import org.mockito.Mock
 import org.mockito.kotlin.any
 import org.mockito.kotlin.anyOrNull
@@ -125,6 +126,46 @@ class SafetyPluginTest : TestBaseWithProfile() {
         whenever(constraintChecker.isClosedLoopAllowed()).thenReturn(ConstraintObject(false, aapsLogger))
         val c = safetyPlugin.isSMBModeEnabled(ConstraintObject(true, aapsLogger))
         assertThat(c.getReasons()).contains("SMB not allowed in open loop mode")
+        assertThat(c.value()).isFalse()
+    }
+
+    /**
+     * Objectives done, so closed loop is permitted, but the user runs OPEN_LOOP. SMB must be off: the open
+     * loop "Accept" gives only the low temp that comes with an SMB and drops the SMB itself.
+     */
+    @Test
+    fun openLoopRunningModePreventsSMBWhenClosedLoopIsPermitted() = runTest {
+        whenever(constraintChecker.isClosedLoopAllowed()).thenReturn(ConstraintObject(true, aapsLogger))
+        whenever(persistenceLayer.getRunningModeActiveAt(anyLong())).thenReturn(RM(timestamp = 0, mode = RM.Mode.OPEN_LOOP, duration = 0))
+        val c = safetyPlugin.isSMBModeEnabled(ConstraintObject(true, aapsLogger))
+        assertThat(c.getReasons()).contains("SMB not allowed in open loop mode")
+        assertThat(c.value()).isFalse()
+    }
+
+    @Test
+    fun closedLoopRunningModeAllowsSMB() = runTest {
+        whenever(constraintChecker.isClosedLoopAllowed()).thenReturn(ConstraintObject(true, aapsLogger))
+        whenever(persistenceLayer.getRunningModeActiveAt(anyLong())).thenReturn(RM(timestamp = 0, mode = RM.Mode.CLOSED_LOOP, duration = 0))
+        val c = safetyPlugin.isSMBModeEnabled(ConstraintObject(true, aapsLogger))
+        assertThat(c.getReasons()).isEmpty()
+        assertThat(c.value()).isTrue()
+    }
+
+    /** LGS keeps SMB, as before the running mode refactor. Whether it should is a separate question. */
+    @Test
+    fun lgsRunningModeAllowsSMB() = runTest {
+        whenever(constraintChecker.isClosedLoopAllowed()).thenReturn(ConstraintObject(true, aapsLogger))
+        whenever(persistenceLayer.getRunningModeActiveAt(anyLong())).thenReturn(RM(timestamp = 0, mode = RM.Mode.CLOSED_LOOP_LGS, duration = 0))
+        val c = safetyPlugin.isSMBModeEnabled(ConstraintObject(true, aapsLogger))
+        assertThat(c.value()).isTrue()
+    }
+
+    /** A paused loop gives no SMB either. The result is not enacted anyway, so this only removes it from the shown result. */
+    @Test
+    fun suspendedRunningModePreventsSMB() = runTest {
+        whenever(constraintChecker.isClosedLoopAllowed()).thenReturn(ConstraintObject(true, aapsLogger))
+        whenever(persistenceLayer.getRunningModeActiveAt(anyLong())).thenReturn(RM(timestamp = 0, mode = RM.Mode.SUSPENDED_BY_USER, duration = 60_000))
+        val c = safetyPlugin.isSMBModeEnabled(ConstraintObject(true, aapsLogger))
         assertThat(c.value()).isFalse()
     }
 

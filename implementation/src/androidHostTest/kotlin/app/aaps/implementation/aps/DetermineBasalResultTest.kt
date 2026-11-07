@@ -1,5 +1,6 @@
 package app.aaps.implementation.aps
 
+import app.aaps.core.data.model.RM
 import app.aaps.core.data.pump.defs.PumpDescription
 import app.aaps.core.interfaces.aps.APSResult
 import app.aaps.core.interfaces.aps.RT
@@ -13,6 +14,7 @@ import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
+import org.mockito.ArgumentMatchers.anyLong
 import org.mockito.kotlin.any
 import org.mockito.kotlin.argumentCaptor
 import org.mockito.kotlin.never
@@ -168,5 +170,50 @@ class DetermineBasalResultTest : TestBaseWithProfile() {
 
         assertThat(absoluteRequest(1.4)).isFalse()
         assertThat(absoluteRequest(1.5)).isTrue()
+    }
+
+    private suspend fun runningMode(mode: RM.Mode) {
+        whenever(runningModePersistenceLayer.getRunningModeActiveAt(anyLong())).thenReturn(RM(timestamp = 0, mode = mode, duration = 0))
+    }
+
+    /**
+     * Closed loop is permitted (objectives done), but the user runs OPEN_LOOP. The minimal change filter
+     * must still be used, or the user gets a new suggestion on almost every loop run.
+     */
+    @Test
+    fun `open loop with closed loop permitted still uses the minimal change filter`() = runBlocking<Unit> {
+        openLoopWithNoTempRunning()
+        whenever(constraintsChecker.isClosedLoopAllowed()).thenReturn(ConstraintObject(true, aapsLogger))
+        runningMode(RM.Mode.OPEN_LOOP)
+        testPumpPlugin.pumpDescription.tempBasalStyle = PumpDescription.PERCENT
+        testPumpPlugin.pumpDescription.maxTempPercent = 200
+
+        assertThat(percentRequest(140)).isFalse()
+        assertThat(percentRequest(170)).isTrue()
+    }
+
+    /** In CLOSED_LOOP and CLOSED_LOOP_LGS every request is passed on, and the driver decides. */
+    @Test
+    fun `closed loop and LGS report every requested change`() = runBlocking<Unit> {
+        openLoopWithNoTempRunning()
+        whenever(constraintsChecker.isClosedLoopAllowed()).thenReturn(ConstraintObject(true, aapsLogger))
+        testPumpPlugin.pumpDescription.tempBasalStyle = PumpDescription.PERCENT
+        testPumpPlugin.pumpDescription.maxTempPercent = 200
+
+        runningMode(RM.Mode.CLOSED_LOOP)
+        assertThat(percentRequest(140)).isTrue()
+        runningMode(RM.Mode.CLOSED_LOOP_LGS)
+        assertThat(percentRequest(140)).isTrue()
+    }
+
+    /** A closed loop running mode that is not permitted (for example an extended bolus runs) is handled as open loop. */
+    @Test
+    fun `closed loop running mode that is not permitted uses the minimal change filter`() = runBlocking<Unit> {
+        openLoopWithNoTempRunning()
+        runningMode(RM.Mode.CLOSED_LOOP)
+        testPumpPlugin.pumpDescription.tempBasalStyle = PumpDescription.PERCENT
+        testPumpPlugin.pumpDescription.maxTempPercent = 200
+
+        assertThat(percentRequest(140)).isFalse()
     }
 }

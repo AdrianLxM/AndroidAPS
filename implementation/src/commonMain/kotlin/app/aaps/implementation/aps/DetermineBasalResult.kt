@@ -17,6 +17,7 @@ import app.aaps.core.interfaces.aps.Predictions
 import app.aaps.core.interfaces.aps.RT
 import app.aaps.core.interfaces.constraints.Constraint
 import app.aaps.core.interfaces.constraints.ConstraintsChecker
+import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.db.ProcessedTbrEbData
 import app.aaps.core.interfaces.insulin.ConcentrationHelper
 import app.aaps.core.interfaces.logging.AAPSLogger
@@ -58,7 +59,8 @@ class DetermineBasalResult(
     private val decimalFormatter: DecimalFormatter,
     private val dateUtil: DateUtil,
     private val apsResultProvider: () -> APSResult,
-    private val ch: ConcentrationHelper
+    private val ch: ConcentrationHelper,
+    private val persistenceLayer: PersistenceLayer
 ) : APSResult {
 
     override var date: Long = 0
@@ -299,9 +301,12 @@ class DetermineBasalResult(
         }
 
     override suspend fun isChangeRequested(): Boolean {
-        val closedLoopEnabled = constraintChecker.isClosedLoopAllowed()
+        // isClosedLoopAllowed() only says if closed loop is permitted. The running mode says if it is
+        // switched on. Both are needed, or OPEN_LOOP never uses the minimal change filter below.
+        val closedLoopActive = constraintChecker.isClosedLoopAllowed().value() &&
+            persistenceLayer.getRunningModeActiveAt(dateUtil.now()).mode.isClosedLoopOrLgs()
         // closed loop mode: handle change at driver level
-        if (closedLoopEnabled.value()) {
+        if (closedLoopActive) {
             aapsLogger.debug(LTag.APS, "DEFAULT: Closed mode")
             return isTempBasalRequested || isBolusRequested
         }
