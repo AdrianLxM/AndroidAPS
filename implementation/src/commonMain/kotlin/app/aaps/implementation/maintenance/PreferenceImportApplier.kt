@@ -20,6 +20,7 @@ import app.aaps.core.keys.interfaces.IntNonPreferenceKey
 import app.aaps.core.keys.interfaces.LongComposedNonPreferenceKey
 import app.aaps.core.keys.interfaces.LongNonPreferenceKey
 import app.aaps.core.keys.interfaces.NonPreferenceKey
+import app.aaps.core.keys.interfaces.PreferenceValueCheck
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.keys.interfaces.StringComposedNonPreferenceKey
 import app.aaps.core.keys.interfaces.StringNonPreferenceKey
@@ -158,6 +159,11 @@ class PreferenceImportApplier(
                     aapsLogger.warn(LTag.CORE, "Import: cannot read '$value' as ${key::class.simpleName} for '$name', skipped")
                     unreadable += name
                 }
+
+                is Staged.Rejected  -> {
+                    aapsLogger.warn(LTag.CORE, "Import: value '$value' for '$name' rejected (${staged.reason}), skipped")
+                    unreadable += name
+                }
             }
         }
 
@@ -222,6 +228,13 @@ class PreferenceImportApplier(
         class Write(val edit: KeyValueStore.Editor.() -> Unit) : Staged
         data object Unchanged : Staged
         data object Unreadable : Staged
+
+        /**
+         * A number that parses but must not be stored: NaN, Infinity, or outside the key's min..max (see
+         * [PreferenceValueCheck]). Writing it would lose the user's own safety limit: for example a NaN
+         * max IOB leaves only the hard limit. Handled like [Unreadable]: the value on this phone stays.
+         */
+        class Rejected(val reason: String) : Staged
     }
 
     /**
@@ -236,14 +249,14 @@ class PreferenceImportApplier(
         is BooleanComposedNonPreferenceKey -> boolean(name, text, key.defaultValue)
         is StringNonPreferenceKey          -> string(name, text, key.defaultValue)
         is StringComposedNonPreferenceKey  -> string(name, text, key.defaultValue)
-        is IntNonPreferenceKey             -> int(name, text, key.defaultValue)
-        is IntComposedNonPreferenceKey     -> int(name, text, key.defaultValue)
-        is LongNonPreferenceKey            -> long(name, text, key.defaultValue)
-        is LongComposedNonPreferenceKey    -> long(name, text, key.defaultValue)
-        is DoubleNonPreferenceKey          -> double(name, text, key.defaultValue)
-        is DoubleComposedNonPreferenceKey  -> double(name, text, key.defaultValue)
+        is IntNonPreferenceKey             -> int(name, key, text, key.defaultValue)
+        is IntComposedNonPreferenceKey     -> int(name, key, text, key.defaultValue)
+        is LongNonPreferenceKey            -> long(name, key, text, key.defaultValue)
+        is LongComposedNonPreferenceKey    -> long(name, key, text, key.defaultValue)
+        is DoubleNonPreferenceKey          -> double(name, key, text, key.defaultValue)
+        is DoubleComposedNonPreferenceKey  -> double(name, key, text, key.defaultValue)
         // Stored as raw mg/dl; the unit conversion happens on the way out of `Preferences`, not here.
-        is UnitDoublePreferenceKey         -> double(name, text, key.defaultValue)
+        is UnitDoublePreferenceKey         -> double(name, key, text, key.defaultValue)
         else                               -> Staged.Unreadable
     }
 
@@ -278,14 +291,16 @@ class PreferenceImportApplier(
         if (alreadyStored(name) { store.getString(name, default) == text }) Staged.Unchanged
         else Staged.Write { putString(name, text) }
 
-    private fun int(name: String, text: String, default: Int): Staged {
+    private fun int(name: String, key: NonPreferenceKey, text: String, default: Int): Staged {
         val value = text.toIntOrNull() ?: return Staged.Unreadable
+        PreferenceValueCheck.rejectReason(key, value)?.let { return Staged.Rejected(it) }
         return if (alreadyStored(name) { store.getInt(name, default) == value }) Staged.Unchanged
         else Staged.Write { putInt(name, value) }
     }
 
-    private fun long(name: String, text: String, default: Long): Staged {
+    private fun long(name: String, key: NonPreferenceKey, text: String, default: Long): Staged {
         val value = text.toLongOrNull() ?: return Staged.Unreadable
+        PreferenceValueCheck.rejectReason(key, value)?.let { return Staged.Rejected(it) }
         return if (alreadyStored(name) { store.getLong(name, default) == value }) Staged.Unchanged
         else Staged.Write { putLong(name, value) }
     }
@@ -300,8 +315,9 @@ class PreferenceImportApplier(
      * stamps keys nobody touched. Comparing at float precision as well asks the question that
      * actually matters: would writing this alter what is stored?
      */
-    private fun double(name: String, text: String, default: Double): Staged {
+    private fun double(name: String, key: NonPreferenceKey, text: String, default: Double): Staged {
         val value = text.toDoubleOrNull() ?: return Staged.Unreadable
+        PreferenceValueCheck.rejectReason(key, value)?.let { return Staged.Rejected(it) }
         return if (alreadyStored(name) {
                 val stored = store.getDouble(name, default)
                 stored == value || stored.toFloat() == value.toFloat()

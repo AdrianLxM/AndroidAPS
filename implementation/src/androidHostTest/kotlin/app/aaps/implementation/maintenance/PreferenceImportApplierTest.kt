@@ -121,6 +121,68 @@ class PreferenceImportApplierTest {
     }
 
     /**
+     * "NaN" parses as a double. A NaN max IOB makes `setIfSmaller(NaN)` do nothing, so the user's own
+     * limit is lost and only the hard limit is left. The value on the phone must stay.
+     */
+    @Test fun `a NaN double is rejected and the stored value stays`() = runTest {
+        store.putDouble(DoubleKey.ApsSmbMaxIob.key, 3.0)
+
+        val outcome = sut().apply(prefs(DoubleKey.ApsSmbMaxIob.key to "NaN"), keepPumpSettings = false)
+
+        assertThat(outcome.unreadable).containsExactly(DoubleKey.ApsSmbMaxIob.key)
+        assertThat(outcome.changed).isEqualTo(0)
+        assertThat(store.getDouble(DoubleKey.ApsSmbMaxIob.key, 0.0)).isEqualTo(3.0)
+    }
+
+    @Test fun `an infinite double is rejected`() = runTest {
+        val outcome = sut().apply(prefs(DoubleKey.SafetyMaxBolus.key to "Infinity"), keepPumpSettings = false)
+
+        assertThat(outcome.unreadable).containsExactly(DoubleKey.SafetyMaxBolus.key)
+        assertThat(store.raw).doesNotContainKey(DoubleKey.SafetyMaxBolus.key)
+    }
+
+    @Test fun `a double above the key max is rejected`() = runTest {
+        // ApsMaxDailyMultiplier allows 1.0 .. 10.0
+        val outcome = sut().apply(prefs(DoubleKey.ApsMaxDailyMultiplier.key to "11"), keepPumpSettings = false)
+
+        assertThat(outcome.unreadable).containsExactly(DoubleKey.ApsMaxDailyMultiplier.key)
+        assertThat(store.raw).doesNotContainKey(DoubleKey.ApsMaxDailyMultiplier.key)
+    }
+
+    /** A max SMB frequency of 0 would switch off the SMB interval check in `LoopPlugin.applySMBRequest`. */
+    @Test fun `an int below the key min is rejected`() = runTest {
+        store.putInt(IntKey.ApsMaxSmbFrequency.key, 3)
+
+        val outcome = sut().apply(prefs(IntKey.ApsMaxSmbFrequency.key to "0"), keepPumpSettings = false)
+
+        assertThat(outcome.unreadable).containsExactly(IntKey.ApsMaxSmbFrequency.key)
+        assertThat(store.getInt(IntKey.ApsMaxSmbFrequency.key, 0)).isEqualTo(3)
+    }
+
+    @Test fun `an int above the key max is rejected`() = runTest {
+        // ApsMaxMinutesOfBasalToLimitSmb allows 15 .. 120
+        val outcome = sut().apply(prefs(IntKey.ApsMaxMinutesOfBasalToLimitSmb.key to "1000"), keepPumpSettings = false)
+
+        assertThat(outcome.unreadable).containsExactly(IntKey.ApsMaxMinutesOfBasalToLimitSmb.key)
+        assertThat(store.raw).doesNotContainKey(IntKey.ApsMaxMinutesOfBasalToLimitSmb.key)
+    }
+
+    @Test fun `values on the range limits are still written`() = runTest {
+        val outcome = sut().apply(
+            prefs(
+                IntKey.ApsMaxMinutesOfBasalToLimitSmb.key to "120",
+                DoubleKey.ApsMaxDailyMultiplier.key to "1.0"
+            ),
+            keepPumpSettings = false
+        )
+
+        assertThat(outcome.unreadable).isEmpty()
+        assertThat(outcome.changed).isEqualTo(2)
+        assertThat(store.getInt(IntKey.ApsMaxMinutesOfBasalToLimitSmb.key, 0)).isEqualTo(120)
+        assertThat(store.getDouble(DoubleKey.ApsMaxDailyMultiplier.key, 0.0)).isEqualTo(1.0)
+    }
+
+    /**
      * Today's import guesses the type from the text: `if (value == "true") putBoolean else putString`.
      * A StringKey whose value happens to be "true" is then stored as a Boolean.
      */

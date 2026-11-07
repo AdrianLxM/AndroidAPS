@@ -211,16 +211,30 @@ class PreferencesImpl(
     override fun observe(key: StringNonPreferenceKey): StateFlow<String> =
         stringFlows.getOrCreate(key.key) { get(key) }
 
+    /**
+     * Reads a stored double. A stored NaN or Infinity reads as [default].
+     *
+     * Such a value can still be in the store from an older build, whose settings import and remote
+     * preference sync did not check numbers. A NaN limit is worse than the default: for example
+     * `setIfSmaller(NaN)` does nothing, so a NaN max IOB or max bolus leaves only the hard limit.
+     * Values outside the key's min..max are NOT clamped here. Clamping on read would quietly change
+     * a value that the user can still see stored, and a key whose range was made smaller later would
+     * change its behaviour without anybody setting it. The range is checked when a value is written
+     * from outside instead (`PreferenceValueCheck`, used by the import and the remote sync).
+     */
+    private fun readDouble(name: String, default: Double): Double =
+        sp.getDouble(name, default).takeIf { it.isFinite() } ?: default
+
     override fun get(key: DoubleNonPreferenceKey): Double =
-        sp.getDouble(key.key, key.defaultValue)
+        readDouble(key.key, key.defaultValue)
 
     override fun get(key: DoublePreferenceKey): Double =
         if (simpleMode && key.calculatedBySM) calculatePreference(key)
         else if (simpleMode && key.defaultedBySM) key.defaultValue
-        else sp.getDouble(key.key, key.defaultValue)
+        else readDouble(key.key, key.defaultValue)
 
     override fun getIfExists(key: DoublePreferenceKey): Double? =
-        if (sp.contains(key.key)) sp.getDouble(key.key, key.defaultValue) else null
+        if (sp.contains(key.key)) readDouble(key.key, key.defaultValue) else null
 
     override fun put(key: DoubleNonPreferenceKey, value: Double) {
         sp.putDouble(key.key, value)
@@ -238,10 +252,10 @@ class PreferencesImpl(
         doubleFlows.getOrCreate(key.key) { get(key) }
 
     override fun get(key: DoubleComposedNonPreferenceKey, vararg arguments: Any): Double =
-        sp.getDouble(key.composeKey(*arguments), key.defaultValue)
+        readDouble(key.composeKey(*arguments), key.defaultValue)
 
     override fun getIfExists(key: DoubleComposedNonPreferenceKey, vararg arguments: Any): Double? =
-        if (sp.contains(key.composeKey(*arguments))) sp.getDouble(key.composeKey(*arguments), key.defaultValue) else null
+        if (sp.contains(key.composeKey(*arguments))) readDouble(key.composeKey(*arguments), key.defaultValue) else null
 
     override fun put(key: DoubleComposedNonPreferenceKey, vararg arguments: Any, value: Double) {
         val composedKey = key.composeKey(*arguments)
@@ -257,10 +271,10 @@ class PreferencesImpl(
 
     override fun get(key: UnitDoublePreferenceKey): Double =
         if (simpleMode && key.defaultedBySM) profileUtil().valueInCurrentUnitsDetect(key.defaultValue)
-        else profileUtil().valueInCurrentUnitsDetect(sp.getDouble(key.key, key.defaultValue))
+        else profileUtil().valueInCurrentUnitsDetect(readDouble(key.key, key.defaultValue))
 
     override fun getIfExists(key: UnitDoublePreferenceKey): Double? =
-        if (sp.contains(key.key)) profileUtil().valueInCurrentUnitsDetect(sp.getDouble(key.key, key.defaultValue)) else null
+        if (sp.contains(key.key)) profileUtil().valueInCurrentUnitsDetect(readDouble(key.key, key.defaultValue)) else null
 
     override fun put(key: UnitDoublePreferenceKey, value: Double) {
         sp.putDouble(key.key, value)
@@ -276,7 +290,7 @@ class PreferencesImpl(
 
     // Raw stored mg/dl, no display-unit conversion (unlike get()). Used for 1:1 sync.
     override fun getRaw(key: UnitDoublePreferenceKey): Double =
-        sp.getDouble(key.key, key.defaultValue)
+        readDouble(key.key, key.defaultValue)
 
     override fun observe(key: UnitDoublePreferenceKey): StateFlow<Double> =
         unitDoubleFlows.getOrCreate(key.key) { get(key) }
